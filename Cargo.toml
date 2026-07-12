@@ -1,0 +1,25 @@
+[package]
+name = "cowboyadvance"
+version = "0.1.0"
+edition = "2021"
+description = "A cowboy cattle-herding demo in real 3D (Bevy; desktop / web / iOS)."
+
+[dependencies]
+# Trim to what we use: 3d + ui. Dropping `2d` (sprites) and `audio` shrinks the
+# wasm binary (important for loading over LAN on iOS Safari) and removes the
+# unused AudioContext. `3d`/`ui` still pull webgl2, default_font, tonemapping,
+# and multi_threaded via `default_platform`.
+bevy = { version = "0.19", default-features = false, features = ["3d", "ui"] }
+
+# Optimize dependencies (Bevy) even in dev builds so the game runs smoothly
+# while our own crate stays fast to recompile.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Tuned for small web binaries.
+[profile.release]
+opt-level = "s"     # optimize for size
+lto = "thin"
+codegen-units = 1
+panic = "abort"     # no unwinding tables
+strip = true        # drop debug symbols

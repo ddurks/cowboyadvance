@@ -1,0 +1,15 @@
+[package]
+name = "cowboyadvance"
+version = "0.1.0"
+edition = "2021"
+description = "A cowboy cattle-herding demo built with macroquad (desktop / web / iOS)."
+
+[dependencies]
+macroquad = "0.4"
+
+# Faster, smaller builds for web/iOS shipping.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
