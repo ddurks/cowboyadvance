@@ -1,9 +1,8 @@
 //! Scene construction: camera, lighting, ground, pen, cows, player, and the 2D
 //! HUD / joystick overlay. Runs once at `Startup`.
 
-use bevy::camera::{RenderTarget, ScalingMode};
+use bevy::camera::ScalingMode;
 use bevy::prelude::*;
-use bevy::render::render_resource::TextureFormat;
 
 use crate::components::*;
 use crate::config::*;
@@ -31,36 +30,30 @@ pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    asset_server: Res<AssetServer>,
 ) {
     let level = Level::build();
 
-    // --- Offscreen "screen" texture --------------------------------------
-    // The 3D game renders into this fixed-resolution image; it's shown inside
-    // the cabinet UI so framing is identical on every device.
-    // NOTE: a *separate* sRGB view format needs the VIEW_FORMATS capability,
-    // which WebGL2 (browser + iOS Safari) lacks. Use a single sRGB format with
-    // no view format so the render target is valid everywhere.
-    let screen_image = images.add(Image::new_target_texture(
-        SCREEN_RES_W,
-        SCREEN_RES_H,
-        TextureFormat::Rgba8UnormSrgb,
-        None,
+    // --- Cameras ---------------------------------------------------------
+    // Three passes over the window (ascending `order`):
+    //  0  background — clears the whole window black (the gutters around the
+    //     fixed-aspect cabinet, and behind the frame's transparent areas).
+    //  1  game — angled orthographic 3D, confined to a viewport (the cabinet's
+    //     scene rect, resized each frame). `clear_color: None` so it draws over
+    //     the black without wiping the gutters; the ground fills the viewport.
+    //  2  UI — the frame pieces, joystick and HUD, on top.
+    commands.spawn((
+        Camera2d::default(),
+        Camera { order: 0, clear_color: ClearColorConfig::Custom(Color::BLACK), ..default() },
     ));
 
-    // --- Game camera: angled orthographic, renders to the texture --------
     let cam_target = world(CAM_TARGET, 0.0);
     commands.spawn((
         Camera3d::default(),
-        Camera {
-            order: -1, // render the game before the window/UI camera
-            clear_color: ClearColorConfig::Custom(srgb3(SKY_COLOR)),
-            ..default()
-        },
-        RenderTarget::Image(screen_image.clone().into()),
+        Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
         Projection::from(OrthographicProjection {
             // AutoMin keeps the whole play box visible on any aspect (uniform
-            // scale, no distortion); wider/taller screens reveal more ground.
+            // scale, no distortion); wider/taller viewports reveal more ground.
             scaling_mode: ScalingMode::AutoMin {
                 min_width: CAM_MIN_WIDTH,
                 min_height: CAM_MIN_HEIGHT,
@@ -68,26 +61,21 @@ pub fn setup(
             ..OrthographicProjection::default_3d()
         }),
         Transform::from_translation(cam_target + CAM_OFFSET).looking_at(cam_target, Vec3::Y),
+        GameCamera,
     ));
 
-    // --- Window camera: draws the cabinet UI over the room background -----
     let ui_camera = commands
         .spawn((
             Camera2d::default(),
-            Camera {
-                clear_color: ClearColorConfig::Custom(srgb3(ROOM_COLOR)),
-                ..default()
-            },
+            Camera { order: 2, clear_color: ClearColorConfig::None, ..default() },
         ))
         .id();
 
-    // Build the cabinet frame (marquee, bezel, screen image, controls).
-    crate::cabinet::spawn_cabinet(&mut commands, ui_camera, screen_image.clone());
-
-    commands.insert_resource(GameScreen {
-        image: screen_image,
-        ui_camera,
-    });
+    // Build the HUD: split frame pieces + the joystick knob.
+    let frame_top = asset_server.load("ui/frame_top.png");
+    let frame_bottom = asset_server.load("ui/frame_bottom.png");
+    let joystick_image = asset_server.load("ui/joystick.png");
+    crate::cabinet::spawn_cabinet(&mut commands, ui_camera, frame_top, frame_bottom, joystick_image);
 
     // --- Lighting --------------------------------------------------------
     commands.spawn((

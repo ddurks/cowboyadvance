@@ -15,6 +15,11 @@ pub const FIELD_HALF_X: f32 = 22.0;
 pub const FIELD_HALF_Z: f32 = 40.0;
 pub const BOUNDARY_MARGIN: f32 = 6.0;
 
+// Near (bottom, +Z) edge. Straight, and pushed down to fill the full visible view
+// (the scene extends behind the bottom frame piece); entities may pass under the
+// hump — that's fine, it just hides them briefly.
+pub const FIELD_Z_NEAR: f32 = 60.0;
+
 // ---------------------------------------------------------------------------
 // Camera (angled orthographic — real 3D, no perspective foreshortening)
 // ---------------------------------------------------------------------------
@@ -30,31 +35,34 @@ pub const CAM_MIN_WIDTH: f32 = 44.0;
 pub const CAM_MIN_HEIGHT: f32 = 64.0;
 
 // ---------------------------------------------------------------------------
-// Cabinet "screen": the game renders to a fixed-resolution offscreen texture
-// (identical framing on every device), then that texture is shown inside the
-// cabinet UI. Aspect matches the AutoMin play box (44/64 = 0.6875).
+// Frame HUD. The bezel art is split into two pieces so it never distorts: a top
+// wood strip (assets/ui/frame_top.png) anchored to the top and a hump + bottom
+// wood (assets/ui/frame_bottom.png) anchored to the bottom, each drawn full
+// cabinet width at its own aspect. The game renders straight into the flexible
+// middle via a camera viewport (AutoMin fits any height), so resizing only
+// changes the scene, never the frame. The joystick (assets/ui/joystick.png,
+// trimmed to content) rides on the hump in the bottom piece.
 // ---------------------------------------------------------------------------
-pub const SCREEN_RES_W: u32 = 880;
-pub const SCREEN_RES_H: u32 = 1280;
 
-/// The dim "arcade room" behind the cabinet (gutter on wide screens).
-pub const ROOM_COLOR: (f32, f32, f32) = (0.055, 0.05, 0.043);
+/// Fixed mobile-portrait aspect (width / height) for the whole cabinet. The
+/// cabinet is contain-fit into the window at this ratio and centred, so the
+/// viewport is identical on phone and desktop (black gutters fill the rest on
+/// wide screens). Set to a modern iPhone portrait ratio (~9:19.5).
+pub const CABINET_AR: f32 = 0.462;
 
-// ---------------------------------------------------------------------------
-// Cabinet frame (Game-Boy × arcade). Portrait aspect + flat retro colours;
-// gradients / real art come later.
-// ---------------------------------------------------------------------------
-pub const CAB_AR: f32 = 0.52; // cabinet width / height (portrait)
-
-pub const BODY_COLOR: (f32, f32, f32) = (0.80, 0.69, 0.52); // desert-sand plastic
-pub const BEZEL_COLOR: (f32, f32, f32) = (0.17, 0.11, 0.07); // dark leather recess
-pub const CONTROLS_COLOR: (f32, f32, f32) = (0.71, 0.59, 0.41);
-pub const STICK_BASE_COLOR: (f32, f32, f32) = (0.15, 0.13, 0.11);
-pub const STICK_BALL_COLOR: (f32, f32, f32) = (0.84, 0.20, 0.16); // red ball-top
-pub const BUTTON_A_COLOR: (f32, f32, f32) = (0.84, 0.20, 0.16);
-pub const BUTTON_B_COLOR: (f32, f32, f32) = (0.91, 0.66, 0.18);
-/// Warm embossed-looking title text on the dark bezel, below the screen.
-pub const TITLE_COLOR: (f32, f32, f32) = (0.90, 0.55, 0.28);
+/// Height of each frame piece as a fraction of cabinet width (= its source
+/// height / width, so the art keeps its shape). The scene fills the gap between.
+pub const FRAME_TOP_H_FRAC: f32 = 0.0917; // frame_top.png is 2400×220
+pub const FRAME_BOTTOM_H_FRAC: f32 = 0.3158; // frame_bottom.png is 2400×758
+/// Joystick rest centre within the bottom piece: x is centred, y is where the
+/// knob sat in the source art (0.889 of the full frame, mapped into the piece).
+pub const STICK_Y_IN_BOTTOM_FRAC: f32 = 0.531;
+/// Knob (ball-top) diameter as a fraction of the cabinet width. Sits on — not
+/// filling — the frame's hump.
+pub const KNOB_DIAM_FRAC: f32 = 0.24;
+/// How far the knob can travel from centre, as a fraction of cabinet width. Kept
+/// small so the knob + its range ring stay inside the hump.
+pub const STICK_RADIUS_FRAC: f32 = 0.06;
 
 // ---------------------------------------------------------------------------
 // Player
@@ -122,7 +130,6 @@ pub const GATE_POST_H: f32 = 2.8;
 // Colours (linear-ish sRGB triples; converted with Color::srgb at spawn)
 // ---------------------------------------------------------------------------
 
-pub const SKY_COLOR: (f32, f32, f32) = (0.55, 0.75, 0.95);
 pub const GROUND_COLOR: (f32, f32, f32) = (0.34, 0.56, 0.28);
 pub const COW_COLOR: (f32, f32, f32) = (0.58, 0.42, 0.30);
 pub const COW_PENNED_COLOR: (f32, f32, f32) = (0.35, 0.80, 0.40);

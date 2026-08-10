@@ -14,6 +14,11 @@ wasm-bindgen --out-name cowboyadvance --out-dir web --target web \
     target/wasm32-unknown-unknown/release/cowboyadvance.wasm
 echo "built -> web/cowboyadvance.js + web/cowboyadvance_bg.wasm"
 
+# Sync runtime assets into web/ so the AssetServer can fetch them (Bevy on wasm
+# loads from /assets/... relative to the page).
+rsync -a --delete assets/ web/assets/ 2>/dev/null || { rm -rf web/assets && cp -R assets web/assets; }
+echo "synced assets -> web/assets/"
+
 # Optional size trim if wasm-opt (binaryen) is installed. Rust wasm uses several
 # post-MVP features, so enable them or wasm-opt rejects the input.
 if command -v wasm-opt >/dev/null 2>&1; then

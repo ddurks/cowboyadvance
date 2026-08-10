@@ -87,8 +87,8 @@ pub fn boundary_force(pos: Vec2) -> Vec2 {
     if pos.x < -FIELD_HALF_X + m {
         f.x += ((-FIELD_HALF_X + m) - pos.x) / m;
     }
-    if pos.y > FIELD_HALF_Z - m {
-        f.y -= (pos.y - (FIELD_HALF_Z - m)) / m;
+    if pos.y > FIELD_Z_NEAR - m {
+        f.y -= (pos.y - (FIELD_Z_NEAR - m)) / m;
     }
     if pos.y < -FIELD_HALF_Z + m {
         f.y += ((-FIELD_HALF_Z + m) - pos.y) / m;
@@ -122,5 +122,5 @@ pub fn resolve_fences(pos: &mut Vec2, vel: &mut Vec2, radius: f32, fences: &[Fen
 /// Keep a position inside the field bounds.
 pub fn clamp_field(pos: &mut Vec2, radius: f32) {
     pos.x = pos.x.clamp(-FIELD_HALF_X + radius, FIELD_HALF_X - radius);
-    pos.y = pos.y.clamp(-FIELD_HALF_Z + radius, FIELD_HALF_Z - radius);
+    pos.y = pos.y.clamp(-FIELD_HALF_Z + radius, FIELD_Z_NEAR - radius);
 }

@@ -23,6 +23,9 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Cowboy Advance".into(),
+                        // Phone-shaped by default (native); the web canvas overrides
+                        // this. The cabinet is a fixed portrait aspect either way.
+                        resolution: (430u32, 932u32).into(),
                         canvas: Some("#bevy-canvas".into()),
                         fit_canvas_to_parent: true,
                         prevent_default_event_handling: true,
@@ -45,6 +48,7 @@ fn main() {
             Update,
             (
                 cabinet::compute_cabinet_layout,
+                cabinet::update_game_viewport,
                 input::gather_input,
                 systems::player_movement,
                 systems::cow_boids,

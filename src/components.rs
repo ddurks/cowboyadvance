@@ -31,14 +31,10 @@ pub struct PenCounter;
 #[derive(Resource)]
 pub struct GameLevel(pub Level);
 
-/// The offscreen texture the 3D game renders into, plus the window camera that
-/// draws the cabinet UI. Kept alive here for future use (e.g. resize handling).
-#[derive(Resource)]
-#[allow(dead_code)]
-pub struct GameScreen {
-    pub image: Handle<Image>,
-    pub ui_camera: Entity,
-}
+/// Marks the 3D game camera, whose window viewport is resized each frame to the
+/// cabinet's scene rect.
+#[derive(Component)]
+pub struct GameCamera;
 
 /// Shared material handles we swap between at runtime.
 #[derive(Resource)]
