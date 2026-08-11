@@ -1,5 +1,13 @@
 # Cowboy Advance
 
+![A cattle drive on the open range: three riders, a column of cattle filing off
+toward distant hills under a big cloudy sky](renders/painting.png)
+
+<sup>Not concept art — a frame of the actual game engine. The riders, cattle and
+grass are the game's own assets and systems; `cargo run --example painting` sets
+up the landscape camera, renders it, and runs a painterly filter over the
+result. See [Painting the box art](#painting-the-box-art).</sup>
+
 A cattle-herding game demo in **real 3D**, built in Rust with [Bevy](https://bevyengine.org)
 0.19. One compiled codebase targets **desktop, web (WebAssembly), and iOS** —
 Rust → native (Metal on iOS) and Rust → wasm (WebGL2), not transpiled JavaScript.
@@ -18,6 +26,7 @@ Cows turn green once penned; the HUD tracks the count.
 ## Running
 
 ### Desktop
+
 ```sh
 cargo run              # debug (deps are optimized, so it runs smoothly)
 cargo run --release
@@ -28,19 +37,25 @@ working directory, so either use `cargo run` or set `BEVY_ASSET_ROOT` to the
 repo root.
 
 ### Web
+
 Needs `wasm-bindgen-cli` matching the `wasm-bindgen` crate Bevy resolves:
+
 ```sh
 cargo tree -i wasm-bindgen --target wasm32-unknown-unknown   # shows the version
 cargo install wasm-bindgen-cli --version <that version>
 rustup target add wasm32-unknown-unknown
 ```
+
 Then build + serve (uses `wasm-opt` if [binaryen](https://github.com/WebAssembly/binaryen) is installed):
+
 ```sh
 ./build-web.sh serve   # -> http://localhost:8080
 ```
+
 To test on a phone, browse to `http://<your-lan-ip>:8080` from the same network.
 
 ### iOS
+
 Compiles today (`cargo build --release --target aarch64-apple-ios`). Running on
 device is the one remaining packaging step: an Xcode/`bevy_main` wrapper + signing
 (see Bevy's `mobile` example). No source changes needed.
@@ -50,22 +65,23 @@ device is the one remaining packaging step: an Xcode/`bevy_main` wrapper + signi
 Layered so input, simulation, and rendering stay independent — the key to easy
 multiplayer later.
 
-| File | Responsibility |
-| --- | --- |
-| `config.rs` | Every tunable constant. **Engine-agnostic.** |
-| `level.rs` | Pen fences + gate geometry. **Engine-agnostic.** |
-| `sim.rs` | The boid herding simulation — pure functions, no ECS. **Engine-agnostic.** |
-| `noise.rs` | Seeded hashing + value noise. **Engine-agnostic.** |
-| `components.rs` | ECS components + resources. |
-| `setup.rs` | Builds the 3D scene + cameras (game→viewport, UI→window). |
-| `cabinet.rs` | The arcade cabinet frame, deterministic layout, and the stick region. |
-| `input.rs` | Keyboard + arcade stick → one `move_dir` per player. |
-| `systems.rs` | Per-frame systems: movement, boids, pen scoring, HUD. |
-| `anim.rs` | glTF characters: animation graphs, rider mounting, speed-driven gaits. |
-| `fence.rs` | Runs the modelled post + rail along the pen and the field edge. |
-| `grass.rs` | The grass field: wind, trampling, and worn trails. |
-| `hide.rs` | Per-cow splotches, so the herd reads as individuals. |
-| `main.rs` | App wiring + system schedule. |
+| File                   | Responsibility                                                             |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `config.rs`            | Every tunable constant. **Engine-agnostic.**                               |
+| `level.rs`             | Pen fences + gate geometry. **Engine-agnostic.**                           |
+| `sim.rs`               | The boid herding simulation — pure functions, no ECS. **Engine-agnostic.** |
+| `noise.rs`             | Seeded hashing + value noise. **Engine-agnostic.**                         |
+| `components.rs`        | ECS components + resources.                                                |
+| `setup.rs`             | Builds the 3D scene + cameras (game→viewport, UI→window).                  |
+| `cabinet.rs`           | The arcade cabinet frame, deterministic layout, and the stick region.      |
+| `input.rs`             | Keyboard + arcade stick → one `move_dir` per player.                       |
+| `systems.rs`           | Per-frame systems: movement, boids, pen scoring, HUD.                      |
+| `anim.rs`              | glTF characters: animation graphs, rider mounting, speed-driven gaits.     |
+| `fence.rs`             | Runs the modelled post + rail along the pen and the field edge.            |
+| `grass.rs`             | The grass field: wind, trampling, and worn trails.                         |
+| `hide.rs`              | Per-cow splotches, so the herd reads as individuals.                       |
+| `main.rs`              | App wiring + system schedule.                                              |
+| `examples/painting.rs` | The header image: a landscape still, rendered by the game (see below).     |
 
 **Simulation.** Runs on the X/Z ground plane with `Vec2`; rendering lifts to 3D.
 Cows are [boids](https://www.red3d.com/cwr/boids/) (separation / alignment /
@@ -87,7 +103,7 @@ viewport squatter than the design ratio, and a contain-fit then limits the
 cabinet by height and pads the sides. Windows wider than `CABINET_AR_MAX` are
 landscape-ish and keep the design ratio, letterboxed, since stretching a
 portrait cabinet across a desktop window would only inflate the frame art. The
-bezel pieces are sized from the cabinet *width* and the scene takes whatever
+bezel pieces are sized from the cabinet _width_ and the scene takes whatever
 height is left, so this only ever stretches the play area, never the frame.
 `cargo test` pins all of it.
 
@@ -177,6 +193,15 @@ Done and verified in-browser:
 - **Gameplay** — boid tuning for portrait, multiple gates, win/round flow.
 - **Native iOS** — Xcode/`bevy_main` wrapper so it runs as an installed app.
 - **Multiplayer** — 4-player coop over the `PlayerInputs` seam.
+
+## Painting the box art
+
+The image at the top of this README is not concept art and not a paint program —
+it is rendered in the game:
+
+```sh
+cargo run --example painting     # -> renders/painting.png
+```
 
 ## Notes
 
