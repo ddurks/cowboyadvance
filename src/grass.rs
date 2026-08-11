@@ -9,9 +9,9 @@
 //!
 //! **Opaque triangles, not alpha cards.** Alpha-tested foliage defeats early-Z
 //! and the hidden-surface removal tile-based mobile GPUs depend on. Solid
-//! triangles cost a fraction as much, and chunky low-poly tufts are the art
-//! style anyway. Thin slivers are avoided too: a 2px-wide triangle costs a
-//! mobile rasterizer nearly as much as an 8px one.
+//! triangles cost a fraction as much, and low-poly tufts suit the art style.
+//! Each tuft is a handful of narrow solid blades: still cheap and opaque, but
+//! clustered closely enough to read as grass rather than scattered confetti.
 //!
 //! **The fixed orthographic camera is exploited twice.** Under an orthographic
 //! projection every tuft sees the camera from the *identical* angle, so the
@@ -70,10 +70,13 @@ const GRASS_SIZE: Vec2 = Vec2::new(
     FIELD_SIZE.y + GRASS_MARGIN * 2.0,
 );
 
-/// Tufts per square unit. The whole budget lives here: at 1.5 over the grown
-/// area that is ~15k tufts = ~45k vertices, of which well under half are on
-/// screen. Drop this first if a device struggles; nothing else changes.
-const TUFTS_PER_UNIT2: f32 = 2.0;
+/// Tuft centres per square unit. Each centre grows `BLADES_PER_TUFT` blades,
+/// so this is deliberately lower than the old one-triangle tuft density.
+const TUFTS_PER_UNIT2: f32 = 1.0;
+
+/// A few nearby blades make one clearly readable tuft without increasing the
+/// old field's triangle budget much.
+const BLADES_PER_TUFT: usize = 3;
 
 /// Fraction of tufts that survive in the thinnest patches. Clumping rejects
 /// the rest, so the effective density is roughly 0.75x the number above.
@@ -85,11 +88,11 @@ const CLUMP_FLOOR: f32 = 0.30;
 const CHUNKS_X: usize = 3;
 const CHUNKS_Z: usize = 5;
 
-/// Big chunky tufts, not thin blades. Small scattered tufts read as confetti
-/// rather than grass, and thin triangles are the one thing a mobile rasterizer
-/// genuinely hates — a 2px sliver costs nearly what an 8px triangle does.
-const TUFT_HEIGHT: (f32, f32) = (0.55, 1.05);
-const TUFT_WIDTH: (f32, f32) = (0.55, 0.95);
+/// Blade dimensions. Width is narrow relative to height; several blades grow
+/// close together so their combined silhouette remains substantial on mobile.
+const BLADE_HEIGHT: (f32, f32) = (0.62, 1.18);
+const BLADE_WIDTH: (f32, f32) = (0.12, 0.24);
+const TUFT_RADIUS: f32 = 0.23;
 /// Blades lean toward the camera so more of each one faces it under the 45°
 /// view. A fraction of the tuft's height.
 const TUFT_LEAN: f32 = 0.22;
@@ -361,9 +364,9 @@ fn build_chunk(centre: Vec2, size: Vec2, seed: u64, level: &Level) -> Option<(Me
     let count = (size.x * size.y * TUFTS_PER_UNIT2) as usize;
     let half = size * 0.5;
 
-    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(count * 3);
-    let mut data: Vec<[u8; 4]> = Vec::with_capacity(count * 3);
-    let mut indices: Vec<u16> = Vec::with_capacity(count * 3);
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(count * BLADES_PER_TUFT * 3);
+    let mut data: Vec<[u8; 4]> = Vec::with_capacity(count * BLADES_PER_TUFT * 3);
+    let mut indices: Vec<u16> = Vec::with_capacity(count * BLADES_PER_TUFT * 3);
 
     let mut tufts = 0usize;
     for i in 0..count {
@@ -381,38 +384,50 @@ fn build_chunk(centre: Vec2, size: Vec2, seed: u64, level: &Level) -> Option<(Me
             continue;
         }
 
-        // Tufts in a thick patch also grow taller.
-        let height = lerp(
-            TUFT_HEIGHT.0,
-            TUFT_HEIGHT.1,
-            hash01(s ^ 0xB2) * 0.55 + clump * 0.45,
-        );
-        let width = lerp(TUFT_WIDTH.0, TUFT_WIDTH.1, hash01(s ^ 0xC3));
-        let yaw = (hash01(s ^ 0xD4) - 0.5) * 2.0 * TUFT_YAW_JITTER;
-        let phase = hash01(s ^ 0xE5);
-        let tint = hash01(s ^ 0xF6);
-        let dry = hash01(s ^ 0x17);
+        // All blades share a little colour and motion character, while their
+        // sizes, positions, and lean vary enough to avoid a fork-like shape.
+        let tuft_phase = hash01(s ^ 0xE5);
+        let tuft_tint = hash01(s ^ 0xF6);
+        let tuft_dry = hash01(s ^ 0x17);
+        for blade in 0..BLADES_PER_TUFT {
+            let bs = s ^ (blade as u64 + 1).wrapping_mul(0xD1B5_4A32_D192_ED03);
+            let angle = hash01(bs ^ 0x31) * std::f32::consts::TAU;
+            let radius = TUFT_RADIUS * hash01(bs ^ 0x42).sqrt();
+            let offset = Vec2::new(angle.cos(), angle.sin()) * radius;
+            let bx = px + offset.x;
+            let bz = pz + offset.y;
 
-        // The base edge runs along X (plus jitter), which puts the blade's
-        // plane facing +Z — straight at the orthographic camera.
-        let (sin_y, cos_y) = yaw.sin_cos();
-        let ex = Vec2::new(cos_y, sin_y) * (width * 0.5);
-        let lean = height * TUFT_LEAN;
-        let lean_x = (hash01(s ^ 0x28) - 0.5) * height * 0.18;
+            let height = lerp(
+                BLADE_HEIGHT.0,
+                BLADE_HEIGHT.1,
+                hash01(bs ^ 0xB2) * 0.55 + clump * 0.45,
+            );
+            let width = lerp(BLADE_WIDTH.0, BLADE_WIDTH.1, hash01(bs ^ 0xC3));
+            let yaw = (hash01(bs ^ 0xD4) - 0.5) * 2.0 * TUFT_YAW_JITTER;
 
-        let base = positions.len() as u16;
-        positions.push([px - ex.x, 0.0, pz - ex.y]);
-        positions.push([px + ex.x, 0.0, pz + ex.y]);
-        positions.push([px + lean_x, height, pz + lean]);
+            // The base edge runs mostly along X, putting the blade's plane
+            // toward the fixed camera while retaining some natural disorder.
+            let (sin_y, cos_y) = yaw.sin_cos();
+            let ex = Vec2::new(cos_y, sin_y) * (width * 0.5);
+            let lean = height * TUFT_LEAN;
+            let lean_x = (hash01(bs ^ 0x28) - 0.5) * height * 0.24;
 
-        let phase_b = (phase * 255.0) as u8;
-        let tint_b = (tint * 255.0) as u8;
-        let dry_b = (dry * 255.0) as u8;
-        data.push([0, phase_b, tint_b, dry_b]);
-        data.push([0, phase_b, tint_b, dry_b]);
-        data.push([255, phase_b, tint_b, dry_b]);
+            let base = positions.len() as u16;
+            positions.push([bx - ex.x, 0.0, bz - ex.y]);
+            positions.push([bx + ex.x, 0.0, bz + ex.y]);
+            positions.push([bx + lean_x, height, bz + lean]);
 
-        indices.extend_from_slice(&[base, base + 1, base + 2]);
+            let phase = (tuft_phase + (hash01(bs ^ 0x53) - 0.5) * 0.08).rem_euclid(1.0);
+            let tint = (tuft_tint + (hash01(bs ^ 0x64) - 0.5) * 0.18).clamp(0.0, 1.0);
+            let phase_b = (phase * 255.0) as u8;
+            let tint_b = (tint * 255.0) as u8;
+            let dry_b = (tuft_dry * 255.0) as u8;
+            data.push([0, phase_b, tint_b, dry_b]);
+            data.push([0, phase_b, tint_b, dry_b]);
+            data.push([255, phase_b, tint_b, dry_b]);
+
+            indices.extend_from_slice(&[base, base + 1, base + 2]);
+        }
         tufts += 1;
     }
 

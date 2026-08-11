@@ -74,7 +74,6 @@ fn vertex(v: Vertex) -> VertexOutput {
     let wear = t.g;
     let push = t.ba * 2.0 - 1.0;
 
-    // --- wind: two octaves plus a gust band travelling across the field ---
     let wdir = gp.wind.xy;
     let ph = globals.time * gp.wind.z + dot(world.xz, wdir) * 0.35 + phase * TAU;
     var sway = (sin(ph) + 0.35 * sin(ph * 2.3 + 1.7)) * gp.wind.w;
@@ -94,7 +93,6 @@ fn vertex(v: Vertex) -> VertexOutput {
     world.z = world.z + up * sin(angle) * dir.y;
     world.y = up * cos(angle);
 
-    // --- shading, per vertex ---------------------------------------------
     var col = mix(gp.base_color.rgb, gp.tip_color.rgb, h);
     col = col * mix(0.91, 1.09, tint);
     // Matted and yellowed where it has been walked on, and more so along the

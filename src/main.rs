@@ -12,12 +12,14 @@ mod anim;
 mod cabinet;
 mod components;
 mod config;
+mod dust;
 mod fence;
 mod grass;
 mod hide;
 mod input;
 mod level;
 mod noise;
+mod ragdoll;
 mod setup;
 mod sim;
 mod systems;
@@ -48,8 +50,9 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins((grass::GrassPlugin, hide::CowHidePlugin))
+        .add_plugins((grass::GrassPlugin, hide::CowHidePlugin, dust::DustPlugin))
         .init_resource::<cabinet::CabinetLayout>()
+        .init_resource::<components::PendingThrows>()
         // Animation graphs before the scene, so the models find them waiting.
         .add_systems(Startup, (anim::load_animations, setup::setup).chain())
         .add_systems(
@@ -60,6 +63,13 @@ fn main() {
                 input::gather_input,
                 systems::player_movement,
                 systems::cow_boids,
+                // Hard contacts after both movers have written their positions;
+                // a hit over the throw threshold ejects the rider (and maybe
+                // the horse) into a ballistic tumble.
+                systems::body_collisions,
+                ragdoll::throw_players,
+                ragdoll::ragdoll_motion,
+                ragdoll::respawn_players,
                 // Models spawn asynchronously, so these keep watching for parts
                 // that have only just appeared.
                 anim::mount_rider,

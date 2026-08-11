@@ -23,6 +23,31 @@ pub struct Cow {
 #[derive(Component)]
 pub struct Velocity(pub Vec2);
 
+/// A player knocked out of the saddle: input is ignored and the ragdoll plays
+/// out until `timer` runs down, then `ragdoll::respawn_players` rebuilds them.
+#[derive(Component)]
+pub struct Downed {
+    pub timer: f32,
+    /// The horse went flying too, so there is nothing standing at the player's
+    /// position — skip it in collisions and cow avoidance until respawn.
+    pub horse_gone: bool,
+}
+
+/// A hit hard enough to unseat somebody. Queued by `systems::body_collisions`,
+/// consumed by `ragdoll::throw_players` in the same frame — a resource rather
+/// than a message so the ordering stays explicit in the system chain.
+pub struct Throw {
+    pub player: Entity,
+    /// Velocity going into the impact — the "over the handlebars" component.
+    pub pre_vel: Vec2,
+    /// Velocity after the impulse — carries the striker's momentum.
+    pub post_vel: Vec2,
+    pub horse_too: bool,
+}
+
+#[derive(Resource, Default)]
+pub struct PendingThrows(pub Vec<Throw>);
+
 #[derive(Component)]
 pub struct PenCounter;
 

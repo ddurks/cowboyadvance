@@ -17,28 +17,47 @@ use core::f32::consts::{FRAC_PI_2, PI};
 // view rather than exactly on its edge, where they were being clipped to a
 // half-post sliver. The strip of grass beyond them is what makes them read as
 // the edge of the field instead of the edge of the screen.
-pub const FIELD_HALF_X: f32 = 20.5;
-pub const FIELD_HALF_Z: f32 = 40.0;
-pub const BOUNDARY_MARGIN: f32 = 6.0;
+//
+// This width (and the herd/player spawns and camera target/offset) was scaled
+// down by `CAM_ZOOM` in lockstep with the camera's play box, so pulling the
+// camera in leaves the fenced area the same size on screen while the characters
+// — which keep their modelled size — grow by `CAM_ZOOM`.
+pub const FIELD_HALF_X: f32 = 13.67;
+// Deep enough that its top edge (the clamp ceiling) sits just past `PEN_LINE_Z`,
+// so a herded cow can only get over the line by threading the gap. Not scaled as
+// hard as the width: the far edge is off-screen anyway, and this keeps the pen
+// line up under the top frame with a little grass showing above it.
+pub const FIELD_HALF_Z: f32 = 34.0;
+pub const BOUNDARY_MARGIN: f32 = 4.0;
 
 // Near (bottom, +Z) edge. Straight, and pushed down to fill the full visible view
 // (the scene extends behind the bottom frame piece); entities may pass under the
 // hump — that's fine, it just hides them briefly.
-pub const FIELD_Z_NEAR: f32 = 60.0;
+pub const FIELD_Z_NEAR: f32 = 40.0;
 
 // ---------------------------------------------------------------------------
 // Camera (angled orthographic — real 3D, no perspective foreshortening)
 // ---------------------------------------------------------------------------
 
+/// How much closer the camera is pulled than the original framing. The play box
+/// below is divided by this and the whole level (above) multiplied by its
+/// reciprocal, so the fenced field keeps its on-screen size while the characters
+/// — modelled at a fixed size — render this much larger.
+pub const CAM_ZOOM: f32 = 1.5;
+
 /// Ground point the camera looks at (X, Z). Centred on the vertical play area.
-pub const CAM_TARGET: Vec2 = Vec2::new(0.0, -2.0);
+pub const CAM_TARGET: Vec2 = Vec2::new(0.0, -1.33);
 /// Camera offset from its target: high up and pulled back along +Z for a ~45°
-/// downward pitch so cubes show their height. Screen-up maps to world -Z.
-pub const CAM_OFFSET: Vec3 = Vec3::new(0.0, 40.0, 40.0);
+/// downward pitch so cubes show their height. Screen-up maps to world -Z. The
+/// magnitude only frames the near/far planes (orthographic size comes from the
+/// play box below), so it rides down with the rest of the shrunk layout.
+pub const CAM_OFFSET: Vec3 = Vec3::new(0.0, 26.67, 26.67);
 /// Orthographic play box for `ScalingMode::AutoMin` (portrait-shaped): this
 /// area is always fully visible; wider/taller screens just reveal more ground.
-pub const CAM_MIN_WIDTH: f32 = 44.0;
-pub const CAM_MIN_HEIGHT: f32 = 64.0;
+/// The original 44×64 framing, pulled in by `CAM_ZOOM`. The level literals above
+/// were scaled by the reciprocal by hand — re-zoom here and they must move too.
+pub const CAM_MIN_WIDTH: f32 = 44.0 / CAM_ZOOM;
+pub const CAM_MIN_HEIGHT: f32 = 64.0 / CAM_ZOOM;
 
 // ---------------------------------------------------------------------------
 // Frame HUD. The bezel art is split into two pieces so it never distorts: a top
@@ -123,6 +142,51 @@ pub const W_COHESION: f32 = 5.0;
 pub const W_FLEE: f32 = 55.0;
 pub const W_FENCE: f32 = 45.0;
 pub const W_BOUNDARY: f32 = 32.0;
+
+// ---------------------------------------------------------------------------
+// Body collisions & ragdolls
+//
+// Hand-rolled circle physics rather than a physics engine: rapier/avian would
+// add megabytes to the size-tuned wasm bundle, aren't reliably deterministic
+// across platforms (which the lockstep-netcode goal needs), and a jointed
+// skeletal ragdoll is invisible fidelity at this art scale. A ballistic tumble
+// of the whole model reads as "ragdoll" here and costs nothing.
+// ---------------------------------------------------------------------------
+
+pub const COW_MASS: f32 = 1.0;
+/// Horse + rider together. Heavier than a cow so routine herding contact shoves
+/// cows aside rather than rocking the player.
+pub const PLAYER_MASS: f32 = 2.4;
+/// Bounciness of body-body impacts (0 = dead thud, 1 = elastic).
+pub const BODY_RESTITUTION: f32 = 0.35;
+/// Fraction of a pair's overlap closed per frame. Under 1 so the tightly packed
+/// spawn cluster eases apart over a few frames instead of popping.
+pub const BODY_RELAX: f32 = 0.45;
+
+/// Closing speed along the contact normal that unseats the rider. Chasing a
+/// fleeing cow tops out around `PLAYER_SPEED - COW_MAX_SPEED` = 8 (safe, that's
+/// herding); plowing full gallop into a cow with nowhere to run measures ~10-19.
+/// The line sits just above the first regime.
+pub const RIDER_THROW_SPEED: f32 = 10.0;
+/// Closing speed that sends the horse flying too — takes a cow coming *at* you
+/// at speed while you gallop into it.
+pub const HORSE_THROW_SPEED: f32 = 16.0;
+
+// A thrown body's launch velocity = pre-impact velocity * CARRY (the rider keeps
+// going over the handlebars) + the impact's velocity change * SHOVE (a broadside
+// hit batters him sideways), plus the vertical kick.
+pub const RAGDOLL_CARRY: f32 = 0.9;
+pub const RAGDOLL_SHOVE: f32 = 2.2;
+pub const RAGDOLL_UP: f32 = 8.5;
+/// Heavier than earth gravity — arcade scale; a realistic 9.8 floats.
+pub const RAGDOLL_GRAVITY: f32 = 30.0;
+pub const RAGDOLL_BOUNCE: f32 = 0.4;
+/// Max tumble rate, rad/s.
+pub const RAGDOLL_SPIN: f32 = 9.0;
+/// How long a player stays down (ragdoll plays out) before respawning.
+pub const DOWNED_SECS: f32 = 2.4;
+/// Where a respawned player reappears (also the startup spawn).
+pub const PLAYER_SPAWN: Vec2 = Vec2::new(0.0, 22.0);
 
 // ---------------------------------------------------------------------------
 // Character models
@@ -234,16 +298,24 @@ pub const GAIT_STOP_WINDOW: f32 = 0.40;
 pub const RIDER_IDLE_RATE: f32 = 0.45;
 
 // ---------------------------------------------------------------------------
-// Level: pen (a rectangle) with a gate gap in its left wall
+// Level: a fence across the top of the field with a gap to herd cows through
 // ---------------------------------------------------------------------------
 
-// Pen sits at the top (far, -Z); the gate is a gap in its bottom wall (the wall
-// nearest the herd), so you drive the cows up through it.
-pub const PEN_X0: f32 = -15.0;
-pub const PEN_X1: f32 = 15.0;
-pub const PEN_Z0: f32 = -38.0; // far wall (top of screen)
-pub const PEN_Z1: f32 = -18.0; // near wall, holds the gate
-pub const GATE_HALF: f32 = 4.5;
+// There is no pen box — just a fence line spanning the field near the top (far,
+// -Z), split by a gap at the centre. Driving a cow through the gap captures it;
+// a captured cow then walks off the top and vanishes rather than filling a pen.
+// Kept high so the line sits just below the top frame and barely eats the play
+// area.
+pub const PEN_LINE_Z: f32 = -32.0;
+pub const GATE_HALF: f32 = 3.0; // half-width of the gap
+
+/// Once through the gap, a captured cow marches straight off the top at this
+/// speed (units/s) — a steady amble, not the boid herd's dash — and is hidden
+/// past `PEN_HIDE_Z`, so it leaves the play area for good instead of leaking back.
+pub const PEN_EXIT_SPEED: f32 = 8.0;
+/// World Z at which an escaped cow is fully hidden. Past the top of the view
+/// (which sits around `-FIELD_HALF_Z`) so it disappears off-screen, not on it.
+pub const PEN_HIDE_Z: f32 = -44.0;
 
 /// Rail and post cross-section, read straight off the exported model. The sim
 /// widens fence collision by half of this, and grass keeps clear of it.
@@ -260,6 +332,13 @@ pub const FENCE_THICK: f32 = 0.32;
 
 pub const FENCE_MODEL: &str = "models/fence.glb";
 pub const WOOD_TEXTURE: &str = "textures/wood.png";
+
+/// Dust-puff sprite sheet: the balls project's smoke sheet, downscaled and cut
+/// with a transparent gutter per cell. A 7×7 grid of 64px cells, frames 0..45
+/// (the last three cells are blank); one frame plays over each puff's short life.
+pub const DUST_TEXTURE: &str = "textures/dust.png";
+pub const DUST_SHEET_COLS: usize = 7;
+pub const DUST_SHEET_FRAMES: usize = 46;
 
 /// Mesh index inside fence.glb. The exporter writes the post first, the rail
 /// second; re-check if build_props.py ever exports more pieces.

@@ -1,4 +1,5 @@
-//! The level: a fenced pen with a gate gap to herd cows through.
+//! The level: a fence across the top of the field with a gap to herd cows
+//! through — get a cow over the line and it's captured.
 //!
 //! Pure data + geometry helpers on the X/Z plane — no engine dependency beyond
 //! glam math. Consumed both by the boid sim (avoidance) and the spawn system
@@ -36,56 +37,41 @@ pub struct Level {
     /// anything walking off, so these exist to show the player where the world
     /// ends rather than to push anyone back.
     pub boundary: Vec<Fence>,
-    pub pen_min: Vec2,
-    pub pen_max: Vec2,
 }
 
 impl Level {
     pub fn build() -> Self {
-        let (x0, x1, z0, z1) = (PEN_X0, PEN_X1, PEN_Z0, PEN_Z1);
         let g = GATE_HALF;
+        let hx = FIELD_HALF_X;
+        let z = PEN_LINE_Z;
 
+        // The pen is one fence across the top of the field, split by the gap
+        // around X = 0. Real collision (these live in `fences`), so a cow can
+        // only get past the line by threading the gap.
         let fences = vec![
-            // Near wall (z1, nearest the herd), split by the gate gap around X = 0.
-            Fence { a: Vec2::new(x0, z1), b: Vec2::new(-g, z1) },
-            Fence { a: Vec2::new(g, z1), b: Vec2::new(x1, z1) },
-            // Far wall (z0).
-            Fence { a: Vec2::new(x0, z0), b: Vec2::new(x1, z0) },
-            // Left + right walls.
-            Fence { a: Vec2::new(x0, z0), b: Vec2::new(x0, z1) },
-            Fence { a: Vec2::new(x1, z0), b: Vec2::new(x1, z1) },
+            Fence { a: Vec2::new(-hx, z), b: Vec2::new(-g, z) },
+            Fence { a: Vec2::new(g, z), b: Vec2::new(hx, z) },
         ];
 
-        let posts = vec![Vec2::new(-g, z1), Vec2::new(g, z1)];
+        // Gate posts flank the gap, built taller than the run so the opening the
+        // cows have to be driven through reads at a glance.
+        let posts = vec![Vec2::new(-g, z), Vec2::new(g, z)];
 
-        // The field edge. The near (+Z) side is left open on purpose: it sits
-        // below the bottom of the view, behind the cabinet's hump, so fencing
-        // it would be geometry nobody ever sees. The far side runs as two wings
-        // that turn in to meet the pen's back corners, so the pen reads as
-        // built into the boundary instead of floating just in front of it.
-        let (hx, hz) = (FIELD_HALF_X, FIELD_HALF_Z);
+        // The field edge: the two long sides, running from the pen line down past
+        // the bottom of the view. The near (+Z) end is left open — it sits below
+        // the view behind the cabinet's hump — and so is everything above the pen
+        // line, which is where captured cows walk off to.
         let boundary = vec![
-            Fence { a: Vec2::new(-hx, -hz), b: Vec2::new(-hx, FIELD_Z_NEAR) },
-            Fence { a: Vec2::new(hx, -hz), b: Vec2::new(hx, FIELD_Z_NEAR) },
-            Fence { a: Vec2::new(-hx, -hz), b: Vec2::new(x0, -hz) },
-            Fence { a: Vec2::new(x1, -hz), b: Vec2::new(hx, -hz) },
-            Fence { a: Vec2::new(x0, -hz), b: Vec2::new(x0, z0) },
-            Fence { a: Vec2::new(x1, -hz), b: Vec2::new(x1, z0) },
+            Fence { a: Vec2::new(-hx, z), b: Vec2::new(-hx, FIELD_Z_NEAR) },
+            Fence { a: Vec2::new(hx, z), b: Vec2::new(hx, FIELD_Z_NEAR) },
         ];
 
-        Self {
-            fences,
-            posts,
-            boundary,
-            pen_min: Vec2::new(x0, z0),
-            pen_max: Vec2::new(x1, z1),
-        }
+        Self { fences, posts, boundary }
     }
 
-    pub fn in_pen(&self, p: Vec2) -> bool {
-        p.x >= self.pen_min.x
-            && p.x <= self.pen_max.x
-            && p.y >= self.pen_min.y
-            && p.y <= self.pen_max.y
+    /// A cow is captured once it's past the pen line — which, given the fence,
+    /// means it made it through the gap. `p` is (X, Z) on the ground plane.
+    pub fn penned(&self, p: Vec2) -> bool {
+        p.y < PEN_LINE_Z
     }
 }

@@ -31,6 +31,20 @@ fn world(pos: Vec2, y: f32) -> Vec3 {
     Vec3::new(pos.x, y, pos.y)
 }
 
+/// Hang a fresh horse model off a player entity; `MountRider` gets the rider
+/// seated once the scene loads. Used at startup and again by `ragdoll` when a
+/// thrown horse respawns.
+pub fn spawn_horse_model(commands: &mut Commands, asset_server: &AssetServer, player: Entity) {
+    commands.entity(player).with_children(|c| {
+        c.spawn((
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(HORSE_MODEL))),
+            Transform::from_rotation(Quat::from_rotation_y(MODEL_YAW)),
+            Animated { rig: Rig::Horse, driver: player },
+            MountRider { driver: player },
+        ));
+    });
+}
+
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -115,18 +129,20 @@ pub fn setup(
         })),
     ));
 
-    // Goal-zone tint over the pen floor.
-    let pen_center = (level.pen_min + level.pen_max) * 0.5;
-    let pen_size = level.pen_max - level.pen_min;
+    // Goal-zone tint: a short chute straddling the gap, so the target the cows
+    // have to be driven through reads at a glance without a whole pen floor to
+    // paint. Its width matches the opening; it runs a little either side of the
+    // line, into the strip where captured cows walk off.
+    let chute = Vec2::new(GATE_HALF * 2.0, 5.33);
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(pen_size.x, pen_size.y))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(chute.x, chute.y))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgba(PEN_TINT_COLOR.0, PEN_TINT_COLOR.1, PEN_TINT_COLOR.2, 0.5),
             unlit: true,
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_translation(world(pen_center, 0.02)),
+        Transform::from_translation(world(Vec2::new(0.0, PEN_LINE_Z), 0.02)),
     ));
 
     // --- Fences ----------------------------------------------------------
@@ -147,8 +163,8 @@ pub fn setup(
     });
     for i in 0..COW_COUNT {
         // Herd starts clustered near the bottom of the field (+Z).
-        let x = -14.0 + hash01(i as u64 * 2 + 1) * 28.0;
-        let z = 16.0 + hash01(i as u64 * 2 + 2) * 18.0;
+        let x = -9.33 + hash01(i as u64 * 2 + 1) * 18.67;
+        let z = 10.67 + hash01(i as u64 * 2 + 2) * 12.0;
         let cow = commands
             .spawn((
                 Transform::from_translation(world(Vec2::new(x, z), 0.0)),
@@ -176,21 +192,14 @@ pub fn setup(
     });
     let player = commands
         .spawn((
-            Transform::from_translation(world(Vec2::new(0.0, 33.0), 0.0)),
+            Transform::from_translation(world(PLAYER_SPAWN, 0.0)),
             Visibility::default(),
             Player { index: 0 },
             Velocity(Vec2::ZERO),
             ModelTint::new(RIDER_HAT_NODES, hat_mat, true),
         ))
         .id();
-    commands.entity(player).with_children(|c| {
-        c.spawn((
-            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(HORSE_MODEL))),
-            Transform::from_rotation(model_yaw),
-            Animated { rig: Rig::Horse, driver: player },
-            MountRider { driver: player },
-        ));
-    });
+    spawn_horse_model(&mut commands, &asset_server, player);
 
     // --- Resources -------------------------------------------------------
     commands.insert_resource(GameLevel(level));
