@@ -18,7 +18,6 @@ fn travel_rotation(vel: Vec2) -> Option<Quat> {
     }
 }
 
-/// Move each cowboy from its input, with fence collision + field clamping.
 pub fn player_movement(
     time: Res<Time>,
     inputs: Res<PlayerInputs>,
@@ -43,7 +42,6 @@ pub fn player_movement(
     }
 }
 
-/// Advance the herd. Snapshot all cow + player positions, then steer each cow.
 pub fn cow_boids(
     time: Res<Time>,
     level: Res<GameLevel>,
@@ -88,7 +86,6 @@ pub fn cow_boids(
     }
 }
 
-/// Update the penned counter text.
 pub fn update_hud(cows: Query<&Cow>, mut text_q: Query<&mut Text, With<PenCounter>>) {
     let total = cows.iter().count();
     let penned = cows.iter().filter(|c| c.penned).count();

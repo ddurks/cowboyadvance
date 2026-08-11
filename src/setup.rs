@@ -82,7 +82,6 @@ pub fn setup(
         ))
         .id();
 
-    // Build the HUD: split frame pieces + the joystick knob.
     let frame_top = asset_server.load("ui/frame_top.png");
     let frame_bottom = asset_server.load("ui/frame_bottom.png");
     let joystick_image = asset_server.load("ui/joystick.png");

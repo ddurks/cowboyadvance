@@ -199,7 +199,7 @@ pub fn spawn_cabinet(
     joystick_image: Handle<Image>,
 ) {
     let abs = || Node { position_type: PositionType::Absolute, ..default() };
-    // Stretch the frame pieces to their (aspect-matched) nodes so they keep shape.
+    // Stretch (not fit) so a piece fills its aspect-matched node and keeps shape.
     let piece = |img: Handle<Image>, elem: CabElem| {
         (ImageNode { image_mode: NodeImageMode::Stretch, ..ImageNode::new(img) }, abs(), elem)
     };
@@ -218,7 +218,6 @@ pub fn spawn_cabinet(
             c.spawn(piece(frame_top, CabElem::FrameTop));
             c.spawn(piece(frame_bottom, CabElem::FrameBottom));
 
-            // HUD (penned counter) over the scene.
             c.spawn((
                 Text::new("Penned: 0 / 24"),
                 TextFont::from_font_size(20.0),

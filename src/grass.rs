@@ -1,9 +1,6 @@
 //! Grass: sways in the wind, flattens under hooves, springs back, and keeps a
 //! slow-fading record of the trails the herd wears into the field.
 //!
-//! Self-contained: everything it needs lives in this file plus
-//! `assets/shaders/grass.wgsl`. Add `mod grass;` and `GrassPlugin` and it runs.
-//!
 //! # Why it is built this way
 //!
 //! The target is WebGL2 on low-end phones, which rules out the usual tricks —

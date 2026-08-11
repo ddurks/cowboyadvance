@@ -1,27 +1,19 @@
 //! A still "oil painting" of the cattle drive, rendered with the game's own
 //! engine, models and grass — `cargo run --example painting`.
 //!
-//! Everything here is Bevy, not a paint program. The horses, cattle and riders
-//! are the same skinned glTF rigs the game spawns, walking under the same gait
-//! system; the field is the game's grass, trampled by the herd as it passes.
-//! What the example adds is the part the game never needs: a landscape camera,
-//! a procedural sky, rolling hills, aerial haze, and a painterly filter over
-//! the finished frame.
+//! The horses, cattle and riders are the same skinned glTF rigs the game spawns,
+//! walking under the same gait system; the field is the game's grass. The example
+//! adds a landscape camera, a procedural sky, rolling hills, aerial haze, and a
+//! painterly filter over the finished frame.
 //!
-//! # How it works
-//!
-//! 1. The game modules are pulled in by path (`#[path = "../src/…"]`) rather
-//!    than through a library, so the game's own crate layout is untouched.
-//! 2. The scene is composed for a *narrow* lens (20° vertical). That is the
-//!    single most important number in the file: the game's grass covers a fixed
-//!    strip of world, and a long lens keeps its edges outside the frame while
-//!    compressing the distance the way the reference painting does.
-//! 3. The camera renders to a fixed 1920x1080 image, not the window, so the
-//!    output never depends on the monitor or its DPI.
-//! 4. Once the models have loaded and walked for a couple of seconds, the frame
-//!    is captured and run through a generalised Kuwahara filter — the classic
-//!    "flatten into brush strokes while keeping edges" pass — plus a warm grade
-//!    and a canvas grain. Both the raw render and the painted one are saved.
+//! The scene is composed for a *narrow* lens (20° vertical) — the single most
+//! important number in the file: the game's grass covers a fixed strip of world,
+//! and a long lens keeps its edges outside the frame while compressing the
+//! distance the way the reference painting does. The camera renders to a fixed
+//! 1920x1080 image, not the window, so the output never depends on the monitor
+//! or its DPI. Once the models have walked for a couple of seconds the frame is
+//! captured and run through a generalised Kuwahara filter (flatten into brush
+//! strokes while keeping edges), plus a warm grade and a canvas grain.
 //!
 //! Sky, hills, scrub and dust are all generated from one deterministic value
 //! noise, so the picture is byte-identical every run.
@@ -67,10 +59,6 @@ use crate::components::*;
 use crate::config::*;
 use crate::level::Level;
 use crate::noise::{hash01, lerp, smoothstep, value_noise};
-
-// ---------------------------------------------------------------------------
-// Canvas
-// ---------------------------------------------------------------------------
 
 const OUT_W: u32 = 1920;
 const OUT_H: u32 = 1080;
@@ -134,10 +122,6 @@ const FILL_TINT: (f32, f32, f32) = (0.94, 0.96, 1.0);
 const AMBIENT: (f32, f32, f32) = (0.64, 0.75, 0.95);
 const AMBIENT_BRIGHTNESS: f32 = 300.0;
 
-// ---------------------------------------------------------------------------
-// Composition
-// ---------------------------------------------------------------------------
-
 const HERD: usize = 64;
 
 /// The three riders: ground position, the way they are looking, how fast they
@@ -176,10 +160,6 @@ fn herd_point(s: f32) -> Vec2 {
 fn herd_spread(s: f32) -> f32 {
     lerp(7.0, 2.0, s)
 }
-
-// ---------------------------------------------------------------------------
-// App
-// ---------------------------------------------------------------------------
 
 fn main() {
     App::new()
@@ -254,7 +234,7 @@ fn capture(
         return;
     }
     if rigs.iter().count() < EXPECTED_RIGS {
-        return; // scenes still streaming in
+        return; // rigs still streaming in
     }
     shoot.warmed += 1;
     if shoot.warmed < WARMUP_FRAMES {
@@ -276,10 +256,6 @@ fn finish(shoot: Res<Shoot>, mut exit: MessageWriter<AppExit>) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scene
-// ---------------------------------------------------------------------------
-
 fn build_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -287,7 +263,6 @@ fn build_scene(
     mut images: ResMut<Assets<Image>>,
     asset_server: Res<AssetServer>,
 ) {
-    // --- Camera ----------------------------------------------------------
     commands.spawn((
         Camera3d::default(),
         Camera { clear_color: ClearColorConfig::Custom(srgb3(SKY_HAZE)), ..default() },
@@ -317,9 +292,8 @@ fn build_scene(
         Msaa::Sample4,
     ));
 
-    // --- Sky -------------------------------------------------------------
-    // A dome around the eye, textured with the cloud field below. Unlit and
-    // fog-exempt: it *is* the far distance, so nothing should veil it.
+    // Sky dome, unlit and fog-exempt: it *is* the far distance, so nothing
+    // should veil it.
     let sky_tex = images.add(build_sky_texture());
     commands.spawn((
         Mesh3d(meshes.add(build_sky_dome())),
@@ -333,7 +307,6 @@ fn build_scene(
         Transform::from_translation(EYE),
     ));
 
-    // --- Light -----------------------------------------------------------
     commands.spawn((
         DirectionalLight {
             color: srgb3(SUN_TINT),
@@ -370,10 +343,9 @@ fn build_scene(
         ..default()
     });
 
-    // --- Ground and hills ------------------------------------------------
-    // One mesh carries both: it is dead flat under the grass and only starts
-    // swelling a couple of hundred units out, so there is no seam anywhere the
-    // camera can see. The plane behind it is just a backstop for the corners.
+    // The hills mesh is dead flat under the grass and only starts swelling a
+    // couple of hundred units out, so there is no seam anywhere the camera can
+    // see. This plane behind it is just a backstop for the corners.
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(14000.0, 14000.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -394,7 +366,6 @@ fn build_scene(
         })),
     ));
 
-    // --- Scrub -----------------------------------------------------------
     // Sage clumps, thickest around the line where the game's grass stops, which
     // is exactly the edge that would otherwise read as a seam.
     let scrub_mesh = meshes.add(build_shrub());
@@ -423,9 +394,8 @@ fn build_scene(
         ));
     }
 
-    // --- Dust ------------------------------------------------------------
-    // Soft warm cards hanging over the column. Cheap, and the one thing that
-    // makes a line of cattle read as *moving* in a still image.
+    // Soft warm cards hanging over the column: the one thing that makes a line
+    // of cattle read as *moving* in a still image.
     let dust_tex = images.add(build_dust_texture());
     let dust_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(DUST.0, DUST.1, DUST.2, 0.26),
@@ -453,7 +423,6 @@ fn build_scene(
         ));
     }
 
-    // --- Cattle and riders ----------------------------------------------
     let model_yaw = Quat::from_rotation_y(MODEL_YAW);
     let penned_mat = materials.add(StandardMaterial {
         base_color: srgb3(COW_PENNED_COLOR),
@@ -561,8 +530,6 @@ const GRASS_TILE: Vec2 = Vec2::new(
 const GRASS_TILES_X: i32 = 6;
 const GRASS_TILES_Z: i32 = 13;
 
-/// Should a grass tile centred here be spawned at all?
-///
 /// Two rejections. The camera looks down -Z with a half-width of ~0.36 per unit
 /// of depth, so anything well outside that cone is wasted; and tiles are flat at
 /// y = 0, so one sitting on rising ground would bury its tufts in a hillside and
@@ -591,7 +558,7 @@ fn extend_grass(
         for ix in -GRASS_TILES_X..=GRASS_TILES_X {
             for iz in 0..=GRASS_TILES_Z {
                 if ix == 0 && iz == 0 {
-                    continue; // the chunk itself
+                    continue; // the original chunk, already placed
                 }
                 let mut tiled = *transform;
                 tiled.translation.x += ix as f32 * GRASS_TILE.x;
@@ -617,10 +584,6 @@ fn ground(p: Vec2) -> Vec3 {
 fn face(dir: Vec2) -> Quat {
     Quat::from_rotation_y((-dir.x).atan2(-dir.y))
 }
-
-// ---------------------------------------------------------------------------
-// Sky
-// ---------------------------------------------------------------------------
 
 const SKY_SEGS: usize = 128;
 const SKY_RINGS: usize = 48;
@@ -736,10 +699,6 @@ fn sky_color(d: Vec3) -> Vec3 {
     vlerp(base, cloud, amount)
 }
 
-// ---------------------------------------------------------------------------
-// Hills
-// ---------------------------------------------------------------------------
-
 const HILL_NX: usize = 260;
 const HILL_NZ: usize = 190;
 const HILL_X: f32 = 4200.0;
@@ -837,10 +796,6 @@ fn build_hills() -> Mesh {
         .with_inserted_indices(Indices::U32(idx))
 }
 
-// ---------------------------------------------------------------------------
-// Scrub and dust
-// ---------------------------------------------------------------------------
-
 /// A sage clump: a ring of leaning triangles, in the same spirit as the game's
 /// grass tufts — chunky, opaque, and two-sided so winding never matters.
 fn build_shrub() -> Mesh {
@@ -895,10 +850,6 @@ fn build_dust_texture() -> Image {
         RenderAssetUsages::RENDER_WORLD,
     )
 }
-
-// ---------------------------------------------------------------------------
-// Noise and small maths
-// ---------------------------------------------------------------------------
 
 /// Seed for everything generated here, so the picture is identical every run.
 /// Each octave gets its own derived seed — reusing one would make the octaves

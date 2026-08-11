@@ -82,7 +82,6 @@ impl Level {
         }
     }
 
-    /// Is a ground position inside the pen rectangle?
     pub fn in_pen(&self, p: Vec2) -> bool {
         p.x >= self.pen_min.x
             && p.x <= self.pen_max.x

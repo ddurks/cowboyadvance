@@ -48,9 +48,7 @@ pub fn boid_acceleration(
     let mut acc = separation * W_SEPARATION;
 
     if neighbors > 0.0 {
-        // Alignment: match the herd's heading.
         acc += (avg_vel / neighbors).normalize_or_zero() * W_ALIGNMENT;
-        // Cohesion: drift toward the herd's centre.
         let center = avg_pos / neighbors;
         acc += (center - pos).normalize_or_zero() * W_COHESION;
     }
@@ -119,7 +117,6 @@ pub fn resolve_fences(pos: &mut Vec2, vel: &mut Vec2, radius: f32, fences: &[Fen
     }
 }
 
-/// Keep a position inside the field bounds.
 pub fn clamp_field(pos: &mut Vec2, radius: f32) {
     pos.x = pos.x.clamp(-FIELD_HALF_X + radius, FIELD_HALF_X - radius);
     pos.y = pos.y.clamp(-FIELD_HALF_Z + radius, FIELD_Z_NEAR - radius);

@@ -23,11 +23,9 @@ pub struct Cow {
 #[derive(Component)]
 pub struct Velocity(pub Vec2);
 
-/// HUD marker for the "penned" counter text.
 #[derive(Component)]
 pub struct PenCounter;
 
-/// The level geometry, shared with systems as a resource.
 #[derive(Resource)]
 pub struct GameLevel(pub Level);
 
@@ -46,7 +44,6 @@ pub struct GameCamera;
 /// resolved lazily, by glTF node name, and cached here.
 #[derive(Component)]
 pub struct ModelTint {
-    /// glTF nodes whose meshes the tint covers.
     pub nodes: &'static [&'static str],
     pub tint: Handle<StandardMaterial>,
     /// Whether the tint should be showing. Gameplay writes this; the tint
@@ -80,7 +77,6 @@ pub struct JoystickState {
     pub mouse_tracking: bool,
 }
 
-/// Convenience: sRGB triple -> Bevy `Color`.
 pub fn srgb3(c: (f32, f32, f32)) -> Color {
     Color::srgb(c.0, c.1, c.2)
 }

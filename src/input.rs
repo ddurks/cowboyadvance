@@ -8,7 +8,6 @@ use bevy::window::PrimaryWindow;
 use crate::cabinet::CabinetLayout;
 use crate::components::*;
 
-/// Is a pointer near enough to the stick base to grab it?
 fn in_activation(p: Vec2, base: Vec2, radius: f32) -> bool {
     (p - base).length() < radius * 2.4
 }

@@ -1,21 +1,11 @@
 //! Character models and their animation.
 //!
-//! Three concerns, in the order they happen to one entity:
-//!
-//!   1. `load_animations` builds one `AnimationGraph` per rig at startup, from
-//!      clip handles taken straight off the .glb by index — no waiting on the
-//!      `Gltf` asset before the graphs exist.
-//!   2. `mount_rider` and `bind_animation_players` finish the job once the asset
-//!      server has actually spawned a model: the rider gets parented to the
-//!      horse's saddle joint, and every `AnimationPlayer` inside a model is
-//!      handed its graph plus the gameplay entity it takes its cues from.
-//!   3. `drive_gaits` runs each frame: it turns an entity's ground speed into a
-//!      clip and a playback rate, so an animal walks when it ambles, runs when
-//!      it bolts, and skids when it slams to a halt.
-//!
-//! `apply_model_tint` is the odd one out — it recolours part of a spawned model
-//! (penned cows, player-coloured hats), which needs the same "wait for the
-//! scene, then find things by node name" dance as the rest of the file.
+//! Graphs are built at startup from clip handles taken by index off the .glb, so
+//! they exist before any model has loaded. The rest of the file waits on spawned
+//! scenes: parenting the rider to the horse's saddle joint, handing each
+//! `AnimationPlayer` its graph and driver, driving gaits from ground speed, and
+//! recolouring model parts — all via the same "wait for the scene, then find
+//! things by node name" pattern.
 
 use core::time::Duration;
 
@@ -137,9 +127,8 @@ fn quadruped(
     }
 }
 
-/// Build one graph per rig. Clips load by index straight from the .glb, which
-/// means the graphs are ready immediately — nothing here has to wait for the
-/// models to finish loading.
+/// Clips load by index straight from the .glb, so the graphs are ready
+/// immediately — nothing here waits for the models to finish loading.
 pub fn load_animations(
     mut commands: Commands,
     mut graphs: ResMut<Assets<AnimationGraph>>,

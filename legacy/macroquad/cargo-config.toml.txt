@@ -1,5 +1,0 @@
-# macroquad/miniquad resolve GL (glPixelStorei, etc.) at runtime from the JS
-# bundle, so the wasm linker must leave those symbols as imports rather than
-# erroring. Newer wasm-ld needs to be told this explicitly.
-[target.wasm32-unknown-unknown]
-rustflags = ["-C", "link-arg=--import-undefined"]
