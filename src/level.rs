@@ -31,7 +31,11 @@ impl Fence {
 
 pub struct Level {
     pub fences: Vec<Fence>,
-    pub posts: Vec<Vec2>, // decorative gate posts
+    pub posts: Vec<Vec2>, // gate posts, built taller than the run
+    /// The field edge. Drawn, but not simulated — `clamp_field` already stops
+    /// anything walking off, so these exist to show the player where the world
+    /// ends rather than to push anyone back.
+    pub boundary: Vec<Fence>,
     pub pen_min: Vec2,
     pub pen_max: Vec2,
 }
@@ -54,9 +58,25 @@ impl Level {
 
         let posts = vec![Vec2::new(-g, z1), Vec2::new(g, z1)];
 
+        // The field edge. The near (+Z) side is left open on purpose: it sits
+        // below the bottom of the view, behind the cabinet's hump, so fencing
+        // it would be geometry nobody ever sees. The far side runs as two wings
+        // that turn in to meet the pen's back corners, so the pen reads as
+        // built into the boundary instead of floating just in front of it.
+        let (hx, hz) = (FIELD_HALF_X, FIELD_HALF_Z);
+        let boundary = vec![
+            Fence { a: Vec2::new(-hx, -hz), b: Vec2::new(-hx, FIELD_Z_NEAR) },
+            Fence { a: Vec2::new(hx, -hz), b: Vec2::new(hx, FIELD_Z_NEAR) },
+            Fence { a: Vec2::new(-hx, -hz), b: Vec2::new(x0, -hz) },
+            Fence { a: Vec2::new(x1, -hz), b: Vec2::new(hx, -hz) },
+            Fence { a: Vec2::new(x0, -hz), b: Vec2::new(x0, z0) },
+            Fence { a: Vec2::new(x1, -hz), b: Vec2::new(x1, z0) },
+        ];
+
         Self {
             fences,
             posts,
+            boundary,
             pen_min: Vec2::new(x0, z0),
             pen_max: Vec2::new(x1, z1),
         }

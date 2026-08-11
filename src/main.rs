@@ -2,16 +2,22 @@
 //!
 //! The engine-agnostic herding simulation lives in `sim`; the rest is Bevy glue:
 //! `setup` builds the 3D scene, `input` gathers controls, `systems` runs the
-//! per-frame gameplay. Designed so `PlayerInputs` can hold N players for coop.
+//! per-frame gameplay, `anim` drives the skinned characters. Designed so
+//! `PlayerInputs` can hold N players for coop.
 
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 
+mod anim;
 mod cabinet;
 mod components;
 mod config;
+mod fence;
+mod grass;
+mod hide;
 mod input;
 mod level;
+mod noise;
 mod setup;
 mod sim;
 mod systems;
@@ -42,8 +48,10 @@ fn main() {
                     ..default()
                 }),
         )
+        .add_plugins((grass::GrassPlugin, hide::CowHidePlugin))
         .init_resource::<cabinet::CabinetLayout>()
-        .add_systems(Startup, setup::setup)
+        // Animation graphs before the scene, so the models find them waiting.
+        .add_systems(Startup, (anim::load_animations, setup::setup).chain())
         .add_systems(
             Update,
             (
@@ -52,6 +60,13 @@ fn main() {
                 input::gather_input,
                 systems::player_movement,
                 systems::cow_boids,
+                // Models spawn asynchronously, so these keep watching for parts
+                // that have only just appeared.
+                anim::mount_rider,
+                anim::bind_animation_players,
+                anim::apply_model_tint,
+                // Gaits read the velocities the movement systems just wrote.
+                anim::drive_gaits,
                 systems::update_hud,
                 cabinet::apply_cabinet_layout,
             )

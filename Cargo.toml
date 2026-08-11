@@ -9,7 +9,26 @@ description = "A cowboy cattle-herding demo in real 3D (Bevy; desktop / web / iO
 # wasm binary (important for loading over LAN on iOS Safari) and removes the
 # unused AudioContext. `3d`/`ui` still pull webgl2, default_font, tonemapping,
 # and multi_threaded via `default_platform`.
-bevy = { version = "0.19", default-features = false, features = ["3d", "ui"] }
+#
+# `bevy_gltf` and `bevy_animation` are named explicitly rather than left to `3d`:
+# the characters are skinned glTF with baked clips, and a silent feature change
+# upstream would turn into a wall of missing-type errors here.
+bevy = { version = "0.19", default-features = false, features = [
+    "3d",
+    "ui",
+    "bevy_gltf",
+    "bevy_animation",
+] }
+
+# Only `examples/painting.rs` needs these, and dev-dependencies are invisible to
+# the game build — nothing here reaches the desktop, web or iOS binary.
+#
+# `image` is already in the tree (Bevy decodes PNGs with it) and the version is
+# pinned to the one the lock resolves, so this compiles nothing new; it is here
+# so the painterly filter can write its own PNG rather than going through Bevy's
+# `save_to_disk`.
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Optimize dependencies (Bevy) even in dev builds so the game runs smoothly
 # while our own crate stays fast to recompile.

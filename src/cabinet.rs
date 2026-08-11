@@ -54,13 +54,27 @@ pub enum CabElem {
 
 /// Fit-and-place the HUD within a `w`×`h` window (logical px).
 pub fn compute_layout(w: f32, h: f32) -> CabinetLayout {
-    // Fixed mobile-portrait cabinet: contain-fit `CABINET_AR` into the window and
-    // centre it, so the viewport is identical on phone and desktop (black gutters
-    // fill the rest on wide screens).
-    let (cw, ch) = if w / h > CABINET_AR {
-        (h * CABINET_AR, h) // window wider than the cabinet: limited by height
+    // A portrait-shaped window takes its OWN aspect, so the cabinet fills a
+    // phone edge to edge. Pinning it to `CABINET_AR` used to leave wide black
+    // gutters on mobile: browser chrome eats height, which makes the viewport
+    // squatter than the design ratio, and a contain-fit then limits the cabinet
+    // by height and pads the sides. Anything wider than `CABINET_AR_MAX` is
+    // landscape-ish and keeps the design ratio, letterboxed — stretching a
+    // portrait cabinet across a desktop window would only inflate the frame art.
+    //
+    // The frame pieces are sized from the cabinet WIDTH and the scene takes
+    // whatever height is left, so widening the cabinet stretches the play area
+    // and never the bezel.
+    let win_ar = w / h;
+    let ar = if win_ar <= CABINET_AR_MAX {
+        win_ar.max(CABINET_AR_MIN)
     } else {
-        (w, w / CABINET_AR) // window narrower: limited by width
+        CABINET_AR
+    };
+    let (cw, ch) = if win_ar > ar {
+        (h * ar, h) // window wider than the cabinet: limited by height
+    } else {
+        (w, w / ar) // window narrower: limited by width
     };
     let cx = (w - cw) * 0.5;
     let cy = (h - ch) * 0.5;
@@ -225,4 +239,49 @@ pub fn spawn_cabinet(
             // Joystick knob (ball-top art) — sits on the hump, drags to steer.
             c.spawn((ImageNode::new(joystick_image), abs(), CabElem::Knob));
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Portrait windows must fill the screen edge to edge. The squat aspects in
+    /// here are the ones mobile browsers actually hand us once their own chrome
+    /// has taken a bite out of the viewport — pinning the cabinet to
+    /// `CABINET_AR` left wide black gutters on exactly these.
+    #[test]
+    fn portrait_windows_fill_the_screen() {
+        for &(w, h) in &[
+            (390.0, 844.0), // iPhone portrait, no chrome
+            (390.0, 734.0), // ...with Safari's toolbars
+            (430.0, 932.0), // the native window default
+            (360.0, 640.0), // a short 9:16 Android
+            (768.0, 1024.0), // tablet portrait
+        ] {
+            let l = compute_layout(w, h);
+            assert!(l.frame_top.x.abs() < 0.01, "{w}x{h}: gutter on the left");
+            assert!((l.frame_top.w - w).abs() < 0.01, "{w}x{h}: not full width");
+            assert!((l.frame_bottom.y + l.frame_bottom.h - h).abs() < 0.01,
+                    "{w}x{h}: cabinet does not reach the bottom");
+        }
+    }
+
+    /// Landscape keeps the design ratio rather than stretching a portrait
+    /// cabinet across the window and inflating the bezel with it.
+    #[test]
+    fn landscape_windows_letterbox() {
+        let l = compute_layout(1920.0, 1080.0);
+        assert!((l.frame_top.w - 1080.0 * CABINET_AR).abs() < 0.01);
+        assert!(l.frame_top.x > 0.0, "expected gutters on a landscape window");
+    }
+
+    /// The frame keeps its own shape at every size — it is the scene that flexes.
+    #[test]
+    fn frame_pieces_never_distort() {
+        for &(w, h) in &[(390.0, 734.0), (1920.0, 1080.0), (430.0, 932.0)] {
+            let l = compute_layout(w, h);
+            assert!((l.frame_top.h - l.frame_top.w * FRAME_TOP_H_FRAC).abs() < 0.01);
+            assert!((l.frame_bottom.h - l.frame_bottom.w * FRAME_BOTTOM_H_FRAC).abs() < 0.01);
+        }
+    }
 }

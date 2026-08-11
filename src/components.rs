@@ -36,11 +36,33 @@ pub struct GameLevel(pub Level);
 #[derive(Component)]
 pub struct GameCamera;
 
-/// Shared material handles we swap between at runtime.
-#[derive(Resource)]
-pub struct GameAssets {
-    pub cow: Handle<StandardMaterial>,
-    pub cow_penned: Handle<StandardMaterial>,
+/// A runtime material override for part of a spawned glTF model: the cow's hide
+/// turning green once it is penned, and the rider's hat carrying the player's
+/// colour.
+///
+/// glTF materials are shared by every instance of a model, so recolouring one
+/// cow means swapping the handle on that cow's own mesh entities. Those live
+/// inside the scene the asset server spawns a few frames later, so the parts are
+/// resolved lazily, by glTF node name, and cached here.
+#[derive(Component)]
+pub struct ModelTint {
+    /// glTF nodes whose meshes the tint covers.
+    pub nodes: &'static [&'static str],
+    pub tint: Handle<StandardMaterial>,
+    /// Whether the tint should be showing. Gameplay writes this; the tint
+    /// system notices and repaints.
+    pub on: bool,
+    /// (mesh entity, the material it was modelled with). Empty until the model
+    /// finishes spawning.
+    pub parts: Vec<(Entity, Handle<StandardMaterial>)>,
+    /// What the meshes are actually painted with right now.
+    pub applied: bool,
+}
+
+impl ModelTint {
+    pub fn new(nodes: &'static [&'static str], tint: Handle<StandardMaterial>, on: bool) -> Self {
+        Self { nodes, tint, on, parts: Vec::new(), applied: false }
+    }
 }
 
 /// Per-player movement intent (input space: x = right, y = forward). Indexed by

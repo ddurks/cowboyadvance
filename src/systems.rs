@@ -1,5 +1,5 @@
-//! Per-frame gameplay systems: player movement, the boid herd, pen scoring +
-//! material swap, HUD, and the joystick knob overlay.
+//! Per-frame gameplay systems: player movement, the boid herd, pen scoring, and
+//! the HUD. What the characters *look* like doing it lives in `anim`.
 
 use bevy::prelude::*;
 
@@ -47,17 +47,8 @@ pub fn player_movement(
 pub fn cow_boids(
     time: Res<Time>,
     level: Res<GameLevel>,
-    assets: Res<GameAssets>,
     players: Query<&Transform, (With<Player>, Without<Cow>)>,
-    mut cows: Query<
-        (
-            &mut Transform,
-            &mut Velocity,
-            &mut Cow,
-            &mut MeshMaterial3d<StandardMaterial>,
-        ),
-        Without<Player>,
-    >,
+    mut cows: Query<(&mut Transform, &mut Velocity, &mut Cow, &mut ModelTint), Without<Player>>,
 ) {
     let dt = time.delta_secs();
 
@@ -73,7 +64,7 @@ pub fn cow_boids(
         .collect();
 
     // Pass 2: steer each cow against the snapshot (same iteration order).
-    for (i, (mut tf, mut vel, mut cow, mut mat)) in cows.iter_mut().enumerate() {
+    for (i, (mut tf, mut vel, mut cow, mut tint)) in cows.iter_mut().enumerate() {
         let acc = boid_acceleration(i, &snapshot, &player_positions, &level.0);
         let mut v = vel.0 + acc * dt;
         v *= 1.0 - (COW_DRAG * dt).min(1.0);
@@ -91,11 +82,8 @@ pub fn cow_boids(
         let penned = level.0.in_pen(pos);
         if penned != cow.penned {
             cow.penned = penned;
-            mat.0 = if penned {
-                assets.cow_penned.clone()
-            } else {
-                assets.cow.clone()
-            };
+            // `anim::apply_model_tint` repaints the hide next time it runs.
+            tint.on = penned;
         }
     }
 }

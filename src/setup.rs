@@ -1,9 +1,14 @@
-//! Scene construction: camera, lighting, ground, pen, cows, player, and the 2D
-//! HUD / joystick overlay. Runs once at `Startup`.
+//! Scene construction: camera, lighting, ground, pen, the herd, the mounted
+//! player, and the 2D HUD / joystick overlay. Runs once at `Startup`.
+//!
+//! The characters are only *requested* here — glTF scenes load asynchronously,
+//! so `anim` finishes assembling them (rider onto saddle, clips onto players)
+//! whenever they actually turn up.
 
 use bevy::camera::ScalingMode;
 use bevy::prelude::*;
 
+use crate::anim::{Animated, MountRider, Rig};
 use crate::components::*;
 use crate::config::*;
 use crate::level::Level;
@@ -36,15 +41,21 @@ pub fn setup(
 
     // --- Cameras ---------------------------------------------------------
     // Three passes over the window (ascending `order`):
-    //  0  background — clears the whole window black (the gutters around the
-    //     fixed-aspect cabinet, and behind the frame's transparent areas).
+    //  0  background — clears the whole window to the bezel's own brown, so the
+    //     bands a phone leaves above and below (and any letterbox on a window
+    //     the cabinet cannot fill) read as more of the frame's timber rather
+    //     than as dead space. Also sits behind the frame's transparent areas.
     //  1  game — angled orthographic 3D, confined to a viewport (the cabinet's
     //     scene rect, resized each frame). `clear_color: None` so it draws over
     //     the black without wiping the gutters; the ground fills the viewport.
     //  2  UI — the frame pieces, joystick and HUD, on top.
     commands.spawn((
         Camera2d::default(),
-        Camera { order: 0, clear_color: ClearColorConfig::Custom(Color::BLACK), ..default() },
+        Camera {
+            order: 0,
+            clear_color: ClearColorConfig::Custom(srgb3(FRAME_WOOD_COLOR)),
+            ..default()
+        },
     ));
 
     let cam_target = world(CAM_TARGET, 0.0);
@@ -119,113 +130,71 @@ pub fn setup(
         Transform::from_translation(world(pen_center, 0.02)),
     ));
 
-    // --- Fences + gate posts --------------------------------------------
-    let fence_mat = materials.add(StandardMaterial {
-        base_color: srgb3(FENCE_COLOR),
-        perceptual_roughness: 0.9,
-        ..default()
-    });
-    for f in &level.fences {
-        let mid = (f.a + f.b) * 0.5;
-        let d = f.b - f.a;
-        let size = if d.x.abs() >= d.y.abs() {
-            Vec3::new(d.x.abs() + FENCE_THICK, FENCE_HEIGHT, FENCE_THICK)
-        } else {
-            Vec3::new(FENCE_THICK, FENCE_HEIGHT, d.y.abs() + FENCE_THICK)
-        };
-        commands.spawn((
-            Mesh3d(meshes.add(Cuboid::new(size.x, size.y, size.z))),
-            MeshMaterial3d(fence_mat.clone()),
-            Transform::from_translation(world(mid, FENCE_HEIGHT * 0.5)),
-        ));
-    }
+    // --- Fences ----------------------------------------------------------
+    // The pen, plus the field edge, built from the modelled post and rail.
+    crate::fence::spawn_fences(&mut commands, &asset_server, &mut materials, &level);
 
-    let post_mesh = meshes.add(Cuboid::new(0.6, GATE_POST_H, 0.6));
-    let post_mat = materials.add(StandardMaterial {
-        base_color: srgb3(POST_COLOR),
-        ..default()
-    });
-    for &post in &level.posts {
-        commands.spawn((
-            Mesh3d(post_mesh.clone()),
-            MeshMaterial3d(post_mat.clone()),
-            Transform::from_translation(world(post, GATE_POST_H * 0.5)),
-        ));
-    }
+    // --- Characters ------------------------------------------------------
+    // Gameplay lives on a bare transform; the model hangs off it as a child so
+    // the sim never has to care that the art is a skinned glTF spun 180° to
+    // face the way the game thinks is forward. Models stand on y = 0 — their
+    // rigs are rooted at the feet.
+    let model_yaw = Quat::from_rotation_y(MODEL_YAW);
 
-    // --- Cows ------------------------------------------------------------
-    let cow_mesh = meshes.add(Cuboid::new(COW_SIZE.x, COW_SIZE.y, COW_SIZE.z));
-    let cow_mat = materials.add(StandardMaterial {
-        base_color: srgb3(COW_COLOR),
-        perceptual_roughness: 0.8,
-        ..default()
-    });
     let cow_penned_mat = materials.add(StandardMaterial {
         base_color: srgb3(COW_PENNED_COLOR),
         perceptual_roughness: 0.8,
         ..default()
     });
-    // Front "face" marker — makes heading visible and stands in for a head.
-    let marker_dark = materials.add(StandardMaterial {
-        base_color: srgb3(MARKER_DARK),
-        ..default()
-    });
-    let cow_marker_mesh = meshes.add(Cuboid::new(0.55, 0.5, 0.4));
     for i in 0..COW_COUNT {
         // Herd starts clustered near the bottom of the field (+Z).
         let x = -14.0 + hash01(i as u64 * 2 + 1) * 28.0;
         let z = 16.0 + hash01(i as u64 * 2 + 2) * 18.0;
-        commands
+        let cow = commands
             .spawn((
-                Mesh3d(cow_mesh.clone()),
-                MeshMaterial3d(cow_mat.clone()),
-                Transform::from_translation(world(Vec2::new(x, z), COW_SIZE.y * 0.5)),
+                Transform::from_translation(world(Vec2::new(x, z), 0.0)),
+                Visibility::default(),
                 Cow { penned: false },
                 Velocity(Vec2::ZERO),
+                ModelTint::new(COW_HIDE_NODES, cow_penned_mat.clone(), false),
             ))
-            .with_children(|c| {
-                c.spawn((
-                    Mesh3d(cow_marker_mesh.clone()),
-                    MeshMaterial3d(marker_dark.clone()),
-                    // Local -Z is forward, so the marker leads the way.
-                    Transform::from_xyz(0.0, 0.15, -COW_SIZE.z * 0.5),
-                ));
-            });
-    }
-
-    // --- Player ----------------------------------------------------------
-    let player_mesh = meshes.add(Cuboid::new(PLAYER_SIZE.x, PLAYER_SIZE.y, PLAYER_SIZE.z));
-    let marker_light = materials.add(StandardMaterial {
-        base_color: srgb3(MARKER_LIGHT),
-        ..default()
-    });
-    let player_marker_mesh = meshes.add(Cuboid::new(0.75, 0.6, 0.5));
-    commands
-        .spawn((
-            Mesh3d(player_mesh),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: srgb3(player_color(0)),
-                perceptual_roughness: 0.6,
-                ..default()
-            })),
-            Transform::from_translation(world(Vec2::new(0.0, 33.0), PLAYER_SIZE.y * 0.5)),
-            Player { index: 0 },
-            Velocity(Vec2::ZERO),
-        ))
-        .with_children(|c| {
+            .id();
+        commands.entity(cow).with_children(|c| {
             c.spawn((
-                Mesh3d(player_marker_mesh),
-                MeshMaterial3d(marker_light),
-                Transform::from_xyz(0.0, PLAYER_SIZE.y * 0.2, -PLAYER_SIZE.z * 0.5),
+                WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(COW_MODEL))),
+                Transform::from_rotation(model_yaw),
+                Animated { rig: Rig::Cow, driver: cow },
             ));
         });
+    }
+
+    // The player is a horse; the rider is parented to its saddle joint once the
+    // horse's scene exists (see `anim::mount_rider`).
+    let hat_mat = materials.add(StandardMaterial {
+        base_color: srgb3(player_color(0)),
+        perceptual_roughness: 0.7,
+        ..default()
+    });
+    let player = commands
+        .spawn((
+            Transform::from_translation(world(Vec2::new(0.0, 33.0), 0.0)),
+            Visibility::default(),
+            Player { index: 0 },
+            Velocity(Vec2::ZERO),
+            ModelTint::new(RIDER_HAT_NODES, hat_mat, true),
+        ))
+        .id();
+    commands.entity(player).with_children(|c| {
+        c.spawn((
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(HORSE_MODEL))),
+            Transform::from_rotation(model_yaw),
+            Animated { rig: Rig::Horse, driver: player },
+            MountRider { driver: player },
+        ));
+    });
 
     // --- Resources -------------------------------------------------------
     commands.insert_resource(GameLevel(level));
-    commands.insert_resource(GameAssets {
-        cow: cow_mat,
-        cow_penned: cow_penned_mat,
-    });
     commands.insert_resource(PlayerInputs(vec![Vec2::ZERO])); // one local player
 
     commands.init_resource::<JoystickState>();

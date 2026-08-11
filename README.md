@@ -23,6 +23,10 @@ cargo run              # debug (deps are optimized, so it runs smoothly)
 cargo run --release
 ```
 
+Running the built binary directly roots assets at the **executable**, not the
+working directory, so either use `cargo run` or set `BEVY_ASSET_ROOT` to the
+repo root.
+
 ### Web
 Needs `wasm-bindgen-cli` matching the `wasm-bindgen` crate Bevy resolves:
 ```sh
@@ -34,6 +38,7 @@ Then build + serve (uses `wasm-opt` if [binaryen](https://github.com/WebAssembly
 ```sh
 ./build-web.sh serve   # -> http://localhost:8080
 ```
+To test on a phone, browse to `http://<your-lan-ip>:8080` from the same network.
 
 ### iOS
 Compiles today (`cargo build --release --target aarch64-apple-ios`). Running on
@@ -50,11 +55,16 @@ multiplayer later.
 | `config.rs` | Every tunable constant. **Engine-agnostic.** |
 | `level.rs` | Pen fences + gate geometry. **Engine-agnostic.** |
 | `sim.rs` | The boid herding simulation — pure functions, no ECS. **Engine-agnostic.** |
+| `noise.rs` | Seeded hashing + value noise. **Engine-agnostic.** |
 | `components.rs` | ECS components + resources. |
-| `setup.rs` | Builds the 3D scene + cameras (game→texture, UI→window). |
+| `setup.rs` | Builds the 3D scene + cameras (game→viewport, UI→window). |
 | `cabinet.rs` | The arcade cabinet frame, deterministic layout, and the stick region. |
 | `input.rs` | Keyboard + arcade stick → one `move_dir` per player. |
 | `systems.rs` | Per-frame systems: movement, boids, pen scoring, HUD. |
+| `anim.rs` | glTF characters: animation graphs, rider mounting, speed-driven gaits. |
+| `fence.rs` | Runs the modelled post + rail along the pen and the field edge. |
+| `grass.rs` | The grass field: wind, trampling, and worn trails. |
+| `hide.rs` | Per-cow splotches, so the herd reads as individuals. |
 | `main.rs` | App wiring + system schedule. |
 
 **Simulation.** Runs on the X/Z ground plane with `Vec2`; rendering lifts to 3D.
@@ -64,13 +74,71 @@ No physics engine — just circle-vs-segment resolution. The top three modules
 depend only on glam math and were ported unchanged from an earlier macroquad
 prototype (kept for reference in `legacy/macroquad/`).
 
-**The cabinet (identical framing on every device).** The 3D game renders to a
-fixed-resolution offscreen texture (`Camera3d` + `RenderTarget::Image`), shown as
-a UI `ImageNode` inside a cabinet drawn by a second `Camera2d`. So the game's
-framing is pixel-identical on native iOS, Safari, and desktop; the cabinet scales
-around it and gutters on wide screens. `cabinet.rs` computes a `CabinetLayout`
-from window size each frame and positions every element; the stick reads its
-centre/radius from that same layout, so input and visuals never drift.
+**The cabinet.** The 3D game renders straight into a camera viewport set to the
+cabinet's scene rect, with the bezel drawn over it by a UI `Camera2d`.
+`cabinet.rs` computes a `CabinetLayout` from the window size each frame and
+positions every element; the stick reads its centre and radius from that same
+layout, so input and visuals never drift.
+
+A portrait window takes its **own** aspect (floored at `CABINET_AR_MIN`), so the
+cabinet fills a phone edge to edge. It used to be pinned to `CABINET_AR`, which
+left wide black gutters on mobile — browser chrome eats height, that makes the
+viewport squatter than the design ratio, and a contain-fit then limits the
+cabinet by height and pads the sides. Windows wider than `CABINET_AR_MAX` are
+landscape-ish and keep the design ratio, letterboxed, since stretching a
+portrait cabinet across a desktop window would only inflate the frame art. The
+bezel pieces are sized from the cabinet *width* and the scene takes whatever
+height is left, so this only ever stretches the play area, never the frame.
+`cargo test` pins all of it.
+
+**Characters and gaits.** Each entity is a bare gameplay transform with a
+skinned glTF model hung off it as a child. The rigs are modelled facing −Y in
+Blender and exported "+Y Up", which lands them facing +Z in glTF, so `MODEL_YAW`
+in `config.rs` is the 180° that reconciles them with the game's −Z-forward
+convention. The player's rider is parented to the horse's exported `saddle`
+joint, so he bounces with whatever gait is playing underneath him.
+
+Clip choice and playback rate both come from ground speed. Every locomotion clip
+was animated with a known stride and duration, so `stride / duration` is the
+speed at which its feet do not skate, and playing it at `speed / that` keeps
+them planted. The field is arcade-scaled — roughly 14× the pace the gaits were
+built for — so `GAIT_SPEED_SCALE` in `config.rs` scales every reference speed by
+one shared factor; the authored walk:run relationship survives intact and only
+the absolute pace is dialled back. Thresholds have separate enter/exit values so
+an animal hovering on a boundary doesn't flicker, and dropping out of a run
+fires the one-shot skid clip.
+
+**Grass.** ~15k tufts in 15 chunks, one opaque triangle each, all swayed and
+flattened in the vertex shader. Opaque rather than alpha-tested on purpose:
+alpha foliage defeats early-Z and the hidden-surface removal that tile-based
+mobile GPUs depend on. The fixed orthographic camera is worth two shortcuts —
+every tuft sees the camera from the same angle, so the blade orientation is
+baked at build time with no billboarding maths, and nothing shrinks with
+distance, so there is no LOD.
+
+Trample state lives in one 128×256 texture that the CPU stamps and the vertex
+shader reads — the only texture fetch in the whole shader. `R` is flatten, which
+springs back in about three seconds; `G` is wear, which fades over ninety, so a
+herd driven over the same ground carves semi-permanent trails. Tramplers are
+stamped as swept capsules rather than points, because at 19 units/second a
+cowboy would otherwise leave a dotted line, and recovery only touches the dirty
+rect. Density is one constant (`TUFTS_PER_UNIT2`) if a device struggles.
+
+**Fencing.** `fence.rs` divides each run into a whole number of modules and
+stretches the rails to absorb the rounding, so a run always ends on a post;
+coincident posts at shared corners are deduplicated, and the gate posts are
+built taller so the opening reads at a glance. Every piece shares one material,
+so the couple of hundred of them batch down to a handful of draw calls. The wood
+texture is generated rather than painted, from the same two browns and near-black
+outline as the cabinet bezel — fence and bezel are literally the same timber.
+
+**Cow hides.** Each cow gets its own dark-brown patches, baked into vertex
+colours once when its model finishes loading, so there is no per-frame cost. The
+hide meshes carry no UVs (the material is untextured, so the export strips them),
+and a shader would need the rest position of a skinned vertex to keep patches
+welded to the hide — vertex colours sidestep both, skin along with the mesh for
+free, and compose with the penned-green tint. About one in five cows comes out
+solid-coloured, as a real herd does.
 
 **Multiplayer-ready.** Systems read `PlayerInputs(Vec<Vec2>)`, one entry per
 `Player::index`. Today there's one local player; for 4-player coop you fill more
@@ -83,35 +151,46 @@ Done and verified in-browser:
 
 - Real 3D — directional light, shadows, PBR, orthographic camera.
 - Portrait level: herd up through a gate into the pen; live "penned" counter.
-- Entities yaw to face their travel direction (maps to future character models).
+- Skinned glTF characters — cows, and a cowboy riding a horse — walking,
+  running, skidding to a halt, each clip's tempo scaled to how fast the entity
+  is actually travelling.
+- Grass that sways, flattens under hooves, springs back, and keeps the trails
+  the herd wears into the field.
+- Randomised splotches per cow, so the herd reads as individuals.
+- Modelled fencing around the pen and the field edge, textured with wood
+  generated from the cabinet frame's own palette.
+- Entities yaw to face their travel direction.
 - Retro cabinet: bezeled screen, "COWBOY ADVANCE" title, arcade stick + A/B buttons.
-- Compiles for all three targets; web bundle ~27 MB; clean console.
+- Mobile web: safe-area handling, `100dvh` sizing, and browser chrome tinted to
+  the bezel so the strips above and below match the cabinet.
+- Compiles for all three targets; clean console. The web bundle is ~37 MB, or
+  ~27 MB when `wasm-opt` is available to `build-web.sh`.
 
 ## Roadmap
 
-- **Assets** — replace placeholder cubes with glTF models (cow, cowboy). See
-  `blender/` for a scale-accurate reference scene, and wire up glTF loading.
-- **Cabinet art** — swap flat procedural colours for Blender-baked textures
-  (9-slice the case/bezel, sprite the buttons/stick); optional CRT/scanline pass.
+- **Cabinet art** — swap flat procedural colours for baked textures (9-slice the
+  case/bezel, sprite the buttons/stick); optional CRT/scanline pass.
 - **A/B buttons** — currently cosmetic; wire to a real action (whistle / sprint).
 - **Stylized look** — cel/toon shading + outlines (`ExtendedMaterial` + outlines).
-- **Mobile polish** — safe-area insets for notches/home indicator.
+- **Worn ground** — sample the grass trample map in the ground material too, so
+  dirt paths show through where the grass has been flattened.
 - **Gameplay** — boid tuning for portrait, multiple gates, win/round flow.
 - **Native iOS** — Xcode/`bevy_main` wrapper so it runs as an installed app.
 - **Multiplayer** — 4-player coop over the `PlayerInputs` seam.
 
-## Blender reference
-
-`blender/cowboy_advance_reference.py` builds a scene matching the game's exact
-orthographic camera, with reference cubes at the in-game placeholder sizes, so you
-can model assets to scale and preview the framing. Run it in Blender (Scripting →
-Run) or `blender --background --python blender/cowboy_advance_reference.py`.
-Export glTF with **"+Y Up"** and model **facing −Y** so assets land correctly.
-
 ## Notes
 
-- **WebGL2:** the render-target `Image` uses a single `Rgba8UnormSrgb` format
-  with no separate view format — a separate sRGB view needs the `VIEW_FORMATS`
-  capability that WebGL2 (browser + iOS Safari) lacks.
-- **Tuning:** almost everything — herd feel, camera, pen size, cabinet colours —
-  is a named constant in `src/config.rs`.
+- **Assets are pre-built and committed.** `assets/models/*.glb` and
+  `assets/textures/*` are generated from Blender sources kept outside the repo,
+  so a clone builds and runs without Blender installed. Each locomotion clip's
+  stride and non-skating speed are transcribed into the gait constants in
+  `src/config.rs` — re-check those if a clip is ever re-exported.
+- **WebGL2:** no compute shaders and no storage buffers, which is why the grass
+  is driven by a CPU-written texture read in the vertex shader rather than a
+  compute pass. Vertex texture fetch is the one piece worth re-checking on a
+  real low-end device.
+- **Shaders compile at runtime,** so `cargo check` will not catch a mistake in
+  `assets/shaders/*.wgsl` — a change there needs an actual run.
+- **Tuning:** almost everything — herd feel, camera, pen size, grass density,
+  cabinet colours — is a named constant in `src/config.rs` or at the top of the
+  module that owns it.
