@@ -50,6 +50,7 @@ use std::f32::consts::{PI, TAU};
 use bevy::asset::RenderAssetUsages;
 use bevy::light::CascadeShadowConfigBuilder;
 use bevy::log::{Level as LogLevel, LogPlugin};
+use bevy::math::Affine2;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
@@ -97,8 +98,6 @@ const CLOUD_UNDER: (f32, f32, f32) = (0.58, 0.60, 0.67);
 // enough shading to turn the form.
 const HILL_GREEN: (f32, f32, f32) = (0.30, 0.49, 0.24);
 const HILL_DRY: (f32, f32, f32) = (0.39, 0.53, 0.26);
-const PLAIN: (f32, f32, f32) = (0.32, 0.50, 0.25);
-const SCRUB: (f32, f32, f32) = (0.19, 0.26, 0.15);
 
 /// Greened off from the sky's own haze on purpose: whatever bare ground is left
 /// at the horizon fades into this, and a blue-grey there reads as a strip of
@@ -145,8 +144,15 @@ const RIDERS: [(Vec2, Vec2, f32, usize); 3] = [
 /// same way reads as texture; two heads up and turned out is what makes it read
 /// as animals. Both are early in the line, so they are near enough for a face,
 /// horns and hide markings to carry.
-const TURNED_COWS: [(usize, Vec2); 2] =
-    [(1, Vec2::new(-0.40, 0.92)), (7, Vec2::new(0.58, 0.81))];
+const TURNED_COWS: [(usize, Vec2); 5] = [
+    (1, Vec2::new(-0.40, 0.92)),
+    (7, Vec2::new(0.58, 0.81)),
+    // Foreground animals angled obliquely back at the viewer — an entire front
+    // rank walking away is all rumps, and rumps don't carry a painting.
+    (0, Vec2::new(0.42, 0.91)),
+    (3, Vec2::new(-0.60, 0.80)),
+    (5, Vec2::new(0.25, 0.97)),
+];
 /// Slow enough that the gait system idles them — stopped and staring, rather
 /// than walking at the camera.
 const TURNED_SPEED: f32 = 0.8;
@@ -159,7 +165,7 @@ fn herd_point(s: f32) -> Vec2 {
 /// How wide the column is at `s`. It tightens as it recedes, which is most of
 /// what makes the line read as going away rather than fanning out.
 fn herd_spread(s: f32) -> f32 {
-    lerp(7.0, 2.0, s)
+    lerp(10.0, 3.5, s)
 }
 
 fn main() {
@@ -186,7 +192,7 @@ fn main() {
                 ..default()
             }),
     )
-    .add_plugins(grass::GrassPlugin)
+    .add_plugins((grass::GrassPlugin, hide::CowHidePlugin))
     // Grass builds itself at `Startup` and reads the level, so the resource has
     // to exist before any startup system runs — not be inserted by one.
     .insert_resource(GameLevel(Level::build()))
@@ -346,11 +352,15 @@ fn build_scene(
 
     // The hills mesh is dead flat under the grass and only starts swelling a
     // couple of hundred units out, so there is no seam anywhere the camera can
-    // see. This plane behind it is just a backstop for the corners.
+    // see. This plane behind it is just a backstop for the corners — dressed
+    // in the game's own baked ground so the field between the tufts matches
+    // what the player sees in play. 14000 units over 12.5-unit tiles (the
+    // game's density: 400 / GROUND_TEX_REPEAT) is 1120 repeats.
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(14000.0, 14000.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: srgb3(PLAIN),
+            base_color_texture: Some(crate::setup::ground_image(&mut images)),
+            uv_transform: Affine2::from_scale(Vec2::splat(1120.0)),
             perceptual_roughness: 1.0,
             ..default()
         })),
@@ -366,34 +376,6 @@ fn build_scene(
             ..default()
         })),
     ));
-
-    // Sage clumps, thickest around the line where the game's grass stops, which
-    // is exactly the edge that would otherwise read as a seam.
-    let scrub_mesh = meshes.add(build_shrub());
-    let scrub_mat = materials.add(StandardMaterial {
-        base_color: srgb3(SCRUB),
-        perceptual_roughness: 1.0,
-        double_sided: true,
-        cull_mode: None,
-        ..default()
-    });
-    for i in 0..170u64 {
-        let x = (hash01(i * 7 + 1) - 0.5) * 190.0;
-        let z = lerp(56.0, -180.0, hash01(i * 7 + 2));
-        // Thin them out where the herd walks, so the column stays readable.
-        let near_herd = (x - herd_point(((22.0 - z) / 190.0).clamp(0.0, 1.0)).x).abs();
-        if near_herd < 9.0 && hash01(i * 7 + 3) < 0.75 {
-            continue;
-        }
-        let s = lerp(0.7, 2.1, hash01(i * 7 + 4));
-        commands.spawn((
-            Mesh3d(scrub_mesh.clone()),
-            MeshMaterial3d(scrub_mat.clone()),
-            Transform::from_xyz(x, 0.0, z)
-                .with_scale(Vec3::new(s, s * lerp(0.6, 1.1, hash01(i * 7 + 5)), s))
-                .with_rotation(Quat::from_rotation_y(hash01(i * 7 + 6) * TAU)),
-        ));
-    }
 
     // Soft warm cards hanging over the column: the one thing that makes a line
     // of cattle read as *moving* in a still image.
@@ -436,7 +418,7 @@ fn build_scene(
         let s = (i as f32 + hash01(i as u64 * 3 + 1) * 0.7) / HERD as f32;
         let mid = herd_point(s);
         let across = herd_spread(s) * (hash01(i as u64 * 3 + 2) - 0.5) * 2.0;
-        let pos = mid + Vec2::new(across, (hash01(i as u64 * 3 + 3) - 0.5) * 5.0);
+        let pos = mid + Vec2::new(across, (hash01(i as u64 * 3 + 3) - 0.5) * 8.0);
 
         // Head the way the column is going, with a little wander so the herd
         // does not look like a marching band — unless this is one of the two
@@ -757,7 +739,7 @@ fn build_hills() -> Mesh {
                 + fbm(Vec2::new(x, z) * 0.02, 3) * 0.2
                 - 0.10)
                 .clamp(0.0, 1.0);
-            let base = vlerp(vlerp(v3(PLAIN), v3(HILL_GREEN), smoothstep(1.0, 14.0, h)), v3(HILL_DRY), dry);
+            let base = vlerp(vlerp(v3(GROUND_COLOR), v3(HILL_GREEN), smoothstep(1.0, 14.0, h)), v3(HILL_DRY), dry);
             let lin = Color::srgb(base.x, base.y, base.z).to_linear();
             col.push([lin.red, lin.green, lin.blue, 1.0]);
         }
@@ -776,37 +758,6 @@ fn build_hills() -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
-        .with_inserted_indices(Indices::U32(idx))
-}
-
-/// A sage clump: a ring of leaning triangles, in the same spirit as the game's
-/// grass tufts — chunky, opaque, and two-sided so winding never matters.
-fn build_shrub() -> Mesh {
-    let mut pos = Vec::new();
-    let mut nrm = Vec::new();
-    let mut idx = Vec::new();
-
-    let blades = 7;
-    for k in 0..blades {
-        let a = k as f32 / blades as f32 * TAU;
-        let (s, c) = a.sin_cos();
-        let out = Vec3::new(s, 0.0, c);
-        let side = Vec3::new(c, 0.0, -s) * 0.34;
-        let base = out * 0.55;
-        let apex = out * 0.22 + Vec3::Y * lerp(0.7, 1.0, hash01(k as u64 + 5));
-
-        let n = (apex - base).cross(side * 2.0).normalize_or_zero();
-        let start = pos.len() as u32;
-        for p in [base - side, base + side, apex] {
-            pos.push(p.to_array());
-            nrm.push(n.to_array());
-        }
-        idx.extend_from_slice(&[start, start + 1, start + 2]);
-    }
-
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
         .with_inserted_indices(Indices::U32(idx))
 }
 
@@ -902,6 +853,26 @@ fn develop(shot: On<ScreenshotCaptured>, mut state: ResMut<Shoot>) {
         error!("screenshot had no data");
         state.saved = true;
         return;
+    };
+
+    // The capture arrives in the surface's own layout — BGRA on Metal — and
+    // the filter below indexes channels positionally, so normalise to RGBA
+    // first or the whole painting comes out with red and blue swapped.
+    let swizzled;
+    let src: &[u8] = if matches!(
+        img.texture_descriptor.format,
+        TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
+    ) {
+        swizzled = {
+            let mut data = src.clone();
+            for px in data.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            data
+        };
+        &swizzled
+    } else {
+        src
     };
 
     let start = std::time::Instant::now();

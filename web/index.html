@@ -65,13 +65,46 @@
             width: min(80vw, 512px);
             height: auto;
         }
+        #loading-bar {
+            width: min(60vw, 384px);
+            height: 10px;
+            margin: 18px auto 0;
+            border-radius: 5px;
+            /* Track a shade darker than the bezel so it reads recessed. */
+            background: #46311a;
+            overflow: hidden;
+        }
+        #loading-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 5px;
+            /* The hat's tan — the one light value on the loading screen. */
+            background: #d9c08a;
+            transition: width 120ms linear;
+        }
     </style>
 </head>
 <body>
     <canvas id="bevy-canvas"></canvas>
     <div id="loading-screen" role="status" aria-label="Loading Cowboy Advance">
-        <img id="loading-runner" alt="Cowboy galloping on horseback" />
+        <div>
+            <img id="loading-runner" alt="Cowboy galloping on horseback" />
+            <div id="loading-bar"><div id="loading-fill"></div></div>
+        </div>
     </div>
+    <script>
+        /* Cap the backing resolution at 2x: phones report devicePixelRatio 3,
+           and rendering the whole canvas at 3x was the biggest fill cost on
+           iOS Safari. Overriding the global before the wasm boots keeps winit
+           seeing ONE consistent ratio, so the canvas element stays fullscreen
+           and only the buffer behind it shrinks. (Doing this via Bevy's
+           scale_factor_override instead resizes the canvas element itself.) */
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        Object.defineProperty(window, 'devicePixelRatio', {
+            get: () => dpr,
+            configurable: true,
+        });
+    </script>
     <script type="module">
         /* The js glue and the wasm must come from the same build — each build
            renumbers the glue's function-table exports, so a cached copy of one
@@ -79,12 +112,42 @@
            are loaded under build-stamped URLs (build-web.sh writes the stamp)
            so no cache layer can mix builds; the stamp fetch itself bypasses
            the cache. */
+        /* Loading bar: 0..75% is this shell's exact progress (dominated by
+           wasm download bytes); the engine drives 75..100% from its own spawn
+           milestones (src/loading.rs — keep the split in sync). */
+        const fill = document.getElementById('loading-fill');
+        const bar = (pct) => { fill.style.width = pct + '%'; };
+
         const v = await fetch('./build_id.txt', { cache: 'no-store' })
             .then((r) => (r.ok ? r.text() : 'dev'))
             .catch(() => 'dev');
         document.querySelector('#loading-runner').src = `./assets/ui/loading-cowboy.gif?v=${v}`;
+        bar(2);
         const { default: init } = await import(`./cowboyadvance.js?v=${v}`);
-        await init({ module_or_path: `./cowboyadvance_bg.wasm?v=${v}` });
+        bar(5);
+
+        /* Re-wrap the wasm response in a byte-counting stream so the bar
+           tracks the download exactly; headers ride along so streaming
+           compilation still kicks in. */
+        const resp = await fetch(`./cowboyadvance_bg.wasm?v=${v}`);
+        const total = +resp.headers.get('Content-Length') || 0;
+        let seen = 0;
+        const counted = new Response(new ReadableStream({
+            async start(controller) {
+                const reader = resp.body.getReader();
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    seen += value.length;
+                    bar(total ? 5 + (seen / total) * 65 : 40);
+                    controller.enqueue(value);
+                }
+                controller.close();
+            },
+        }), { status: resp.status, headers: resp.headers });
+
+        await init({ module_or_path: counted });
+        bar(75);
     </script>
 </body>
 </html>

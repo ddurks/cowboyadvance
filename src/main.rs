@@ -5,6 +5,7 @@
 //! per-frame gameplay, `anim` drives the skinned characters. Designed so
 //! `PlayerInputs` can hold N players for coop.
 
+use bevy::asset::{AssetMetaCheck, AssetPlugin};
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 
@@ -27,10 +28,16 @@ mod sim;
 mod systems;
 
 fn main() {
-    App::new()
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(AssetPlugin {
+                // No asset ships a .meta, so the default probe turns every web
+                // load into an extra 404 round trip before the real fetch.
+                meta_check: AssetMetaCheck::Never,
+                ..default()
+            })
+            .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Cowboy Advance".into(),
                         // Phone-shaped by default (native); the web canvas overrides
@@ -94,6 +101,12 @@ fn main() {
                 cabinet::apply_cabinet_layout,
             )
                 .chain(),
-        )
-        .run();
+        );
+
+    #[cfg(target_arch = "wasm32")]
+    app.insert_resource(bevy::light::DirectionalLightShadowMap {
+        size: config::WEB_SHADOW_MAP_SIZE,
+    });
+
+    app.run();
 }

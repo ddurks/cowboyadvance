@@ -442,3 +442,19 @@ pub fn player_color(i: usize) -> (f32, f32, f32) {
         _ => (0.62, 0.36, 0.86), // purple
     }
 }
+
+// ---------------------------------------------------------------------------
+// Web performance
+// ---------------------------------------------------------------------------
+
+// The devicePixelRatio cap lives in web/index.html, not here: overriding the
+// scale factor from inside Bevy makes winit shrink the canvas *element* to
+// physical/deviceDPR, breaking the full-screen layout. Capping the JS global
+// before the wasm boots gives winit one consistent DPR for both.
+
+/// Web shadow map edge (desktop keeps Bevy's 2048). The single cascade hugs
+/// the visible field, so 1024 still lands several texels per ground unit —
+/// soft edges, but every skinned character is drawn into this map each frame
+/// and a quarter of the texels is a quarter of the bandwidth.
+#[cfg(target_arch = "wasm32")]
+pub const WEB_SHADOW_MAP_SIZE: usize = 1024;

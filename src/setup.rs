@@ -50,7 +50,7 @@ fn tile_noise(u: f32, v: f32, cells: usize, seed: u64) -> f32 {
 /// The field's tiling texture: `GROUND_COLOR` carrying the characters' foam
 /// grain plus a short-grass mottle and sparse dirt speckles. Baked here rather
 /// than shipped as an asset so `config` constants stay the tuning knobs.
-fn ground_image(images: &mut Assets<Image>) -> Handle<Image> {
+pub(crate) fn ground_image(images: &mut Assets<Image>) -> Handle<Image> {
     let n = GROUND_TEX_SIZE;
     let base = GROUND_COLOR;
     let dirt = GROUND_DIRT_TINT;
@@ -132,8 +132,20 @@ pub fn setup(
     //     scene rect, resized each frame). `clear_color: None` so it draws over
     //     the black without wiping the gutters; the ground fills the viewport.
     //  2  UI — the frame pieces, joystick and HUD, on top.
+    //
+    // On web every camera drops to Msaa::Off: WebGL2 on a phone already pays
+    // for millions of framebuffer pixels, and the default 4x sampling was the
+    // single biggest fill cost on iOS Safari. The flat-shaded look survives
+    // aliasing; desktop keeps the default. One value for all three cameras —
+    // mixed sample counts would force MSAA writeback between the passes.
+    #[cfg(target_arch = "wasm32")]
+    let msaa = Msaa::Off;
+    #[cfg(not(target_arch = "wasm32"))]
+    let msaa = Msaa::default();
+
     commands.spawn((
         Camera2d::default(),
+        msaa,
         Camera {
             order: 0,
             clear_color: ClearColorConfig::Custom(srgb3(FRAME_WOOD_COLOR)),
@@ -144,6 +156,7 @@ pub fn setup(
     let cam_target = world(CAM_TARGET, 0.0);
     commands.spawn((
         Camera3d::default(),
+        msaa,
         Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
         // Punchy contrast without the `tonemapping_luts` feature (our trimmed
         // build lacks it, so Bevy's default LUT tonemapper would fall back).
@@ -167,6 +180,7 @@ pub fn setup(
     let ui_camera = commands
         .spawn((
             Camera2d::default(),
+            msaa,
             Camera { order: 2, clear_color: ClearColorConfig::None, ..default() },
         ))
         .id();
