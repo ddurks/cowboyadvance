@@ -30,6 +30,8 @@ mod components;
 mod config;
 #[path = "../src/fence.rs"]
 mod fence;
+#[path = "../src/foam.rs"]
+mod foam;
 #[path = "../src/grass.rs"]
 mod grass;
 #[path = "../src/hide.rs"]
@@ -54,7 +56,6 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
 
-use crate::anim::{Animated, MountRider, Rig};
 use crate::components::*;
 use crate::config::*;
 use crate::level::Level;
@@ -190,12 +191,13 @@ fn main() {
     // to exist before any startup system runs — not be inserted by one.
     .insert_resource(GameLevel(Level::build()))
     .init_resource::<Shoot>()
-    .add_systems(Startup, (anim::load_animations, build_scene).chain())
+    .add_systems(Startup, (anim::load_models, build_scene).chain())
     // After `Startup`, so the grass plugin's own chunks already exist.
     .add_systems(PostStartup, extend_grass)
     .add_systems(
         Update,
         (
+            anim::finish_models,
             anim::mount_rider,
             anim::bind_animation_players,
             anim::apply_model_tint,
@@ -261,7 +263,6 @@ fn build_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    asset_server: Res<AssetServer>,
 ) {
     commands.spawn((
         Camera3d::default(),
@@ -423,7 +424,8 @@ fn build_scene(
         ));
     }
 
-    let model_yaw = Quat::from_rotation_y(MODEL_YAW);
+    // The models themselves hang off these roots once `anim::finish_models`
+    // sees the .glbs parsed.
     let penned_mat = materials.add(StandardMaterial {
         base_color: srgb3(COW_PENNED_COLOR),
         perceptual_roughness: 0.8,
@@ -454,22 +456,13 @@ fn build_scene(
             }
         };
 
-        let cow = commands
-            .spawn((
-                Transform::from_translation(ground(pos)).with_rotation(face(dir)),
-                Visibility::default(),
-                Cow { penned: false },
-                Velocity(dir * speed),
-                ModelTint::new(COW_HIDE_NODES, penned_mat.clone(), false),
-            ))
-            .id();
-        commands.entity(cow).with_children(|c| {
-            c.spawn((
-                WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(COW_MODEL))),
-                Transform::from_rotation(model_yaw),
-                Animated { rig: Rig::Cow, driver: cow },
-            ));
-        });
+        commands.spawn((
+            Transform::from_translation(ground(pos)).with_rotation(face(dir)),
+            Visibility::default(),
+            Cow { penned: false },
+            Velocity(dir * speed),
+            ModelTint::new(COW_HIDE_NODES, penned_mat.clone(), false),
+        ));
     }
 
     for (pos, dir, speed, slot) in RIDERS {
@@ -478,23 +471,13 @@ fn build_scene(
             perceptual_roughness: 0.7,
             ..default()
         });
-        let rider = commands
-            .spawn((
-                Transform::from_translation(ground(pos)).with_rotation(face(dir)),
-                Visibility::default(),
-                Player { index: slot },
-                Velocity(dir * speed),
-                ModelTint::new(RIDER_HAT_NODES, hat, true),
-            ))
-            .id();
-        commands.entity(rider).with_children(|c| {
-            c.spawn((
-                WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(HORSE_MODEL))),
-                Transform::from_rotation(model_yaw),
-                Animated { rig: Rig::Horse, driver: rider },
-                MountRider { driver: rider },
-            ));
-        });
+        commands.spawn((
+            Transform::from_translation(ground(pos)).with_rotation(face(dir)),
+            Visibility::default(),
+            Player { index: slot },
+            Velocity(dir * speed),
+            ModelTint::new(RIDER_HAT_NODES, hat, true),
+        ));
     }
 }
 

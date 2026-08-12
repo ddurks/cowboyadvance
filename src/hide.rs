@@ -103,7 +103,9 @@ impl HidePattern {
     }
 
     /// Vertex tint at a rest-pose model-space position. 1.0 = the hide's own
-    /// colour, `dark` = fully inside a patch.
+    /// colour, `dark` = fully inside a patch. The foam grain multiplies in here
+    /// so splotched parts keep their speckle — this bake owns these vertices'
+    /// colours, and `foam` skips any mesh that already has them.
     fn tint_at(&self, p: Vec3, seed: u64) -> [f32; 4] {
         let q = p + self.offset;
         let n = value_noise3(q, SPLOTCH_CELL, seed) * (1.0 - FINE_WEIGHT)
@@ -113,10 +115,11 @@ impl HidePattern {
             self.threshold + EDGE_SOFTNESS,
             n,
         );
+        let g = crate::foam::grain_at(p);
         [
-            lerp(1.0, self.dark.x, m),
-            lerp(1.0, self.dark.y, m),
-            lerp(1.0, self.dark.z, m),
+            lerp(1.0, self.dark.x, m) * g,
+            lerp(1.0, self.dark.y, m) * g,
+            lerp(1.0, self.dark.z, m) * g,
             1.0,
         ]
     }

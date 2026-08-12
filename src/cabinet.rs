@@ -87,11 +87,12 @@ pub fn compute_layout(w: f32, h: f32) -> CabinetLayout {
     let bot_y = cy + ch - bot_h;
     let frame_bottom = RectPx { x: cx, y: bot_y, w: cw, h: bot_h };
 
-    // The scene (the game viewport) fills from under the top wood strip all the
-    // way to the cabinet bottom, so the game renders *behind* the bottom piece —
-    // its transparent flanks reveal the field in the bottom corners, and only the
-    // hump/wood cover it. The play boundary is contoured to match (see sim).
-    let screen = RectPx { x: cx, y: cy + top_h, w: cw, h: (ch - top_h).max(1.0) };
+    // The scene (the game viewport) fills the whole cabinet, so the game
+    // renders *behind* both frame pieces — their transparent edges reveal the
+    // field instead of a sliver of background, and the bottom piece's flanks
+    // show it beside the hump. `CAM_TARGET` carries a fixed offset compensating
+    // for the extra viewport height above the play area (see config).
+    let screen = RectPx { x: cx, y: cy, w: cw, h: ch };
 
     // Joystick on the hump, inside the bottom piece.
     let stick_center = Vec2::new(cx + cw * 0.5, bot_y + bot_h * STICK_Y_IN_BOTTOM_FRAC);

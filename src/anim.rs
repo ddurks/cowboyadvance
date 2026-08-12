@@ -10,6 +10,7 @@
 use core::time::Duration;
 
 use bevy::animation::graph::AnimationNodeIndex;
+use bevy::gltf::Gltf;
 use bevy::prelude::*;
 
 use crate::components::*;
@@ -104,16 +105,13 @@ pub struct GaitState {
 /// arcade scaling in `config`.
 fn quadruped(
     graphs: &mut Assets<AnimationGraph>,
-    asset_server: &AssetServer,
-    file: &'static str,
+    gltf: &Gltf,
     clips: [usize; 4],
     walk: f32,
     run: f32,
     stop_len: f32,
 ) -> RigClips {
-    let (graph, nodes) = AnimationGraph::from_clips(clips.map(|i| {
-        asset_server.load::<AnimationClip>(GltfAssetLabel::Animation(i).from_asset(file))
-    }));
+    let (graph, nodes) = AnimationGraph::from_clips(clips.map(|i| gltf.animations[i].clone()));
     RigClips {
         graph: graphs.add(graph),
         idle: nodes[0],
@@ -127,17 +125,39 @@ fn quadruped(
     }
 }
 
-/// Clips load by index straight from the .glb, so the graphs are ready
-/// immediately — nothing here waits for the models to finish loading.
-pub fn load_animations(
+/// Request each character .glb exactly once, as its root `Gltf` asset. See
+/// `PendingModels` for why sub-assets must never be loaded by label.
+pub fn load_models(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.insert_resource(PendingModels {
+        horse: asset_server.load(HORSE_MODEL),
+        cow: asset_server.load(COW_MODEL),
+        cowboy: asset_server.load(COWBOY_MODEL),
+    });
+}
+
+/// Once all three .glb parses land: build the clip graphs, pin the scene
+/// handles in `ModelScenes`, and hang the models off the gameplay roots that
+/// have been herding invisibly in the meantime.
+pub fn finish_models(
     mut commands: Commands,
     mut graphs: ResMut<Assets<AnimationGraph>>,
-    asset_server: Res<AssetServer>,
+    pending: Option<Res<PendingModels>>,
+    gltfs: Res<Assets<Gltf>>,
+    cows: Query<Entity, With<Cow>>,
+    players: Query<Entity, With<Player>>,
 ) {
+    let Some(pending) = pending else { return };
+    let (Some(horse_gltf), Some(cow_gltf), Some(cowboy_gltf)) = (
+        gltfs.get(&pending.horse),
+        gltfs.get(&pending.cow),
+        gltfs.get(&pending.cowboy),
+    ) else {
+        return;
+    };
+
     let horse = quadruped(
         &mut graphs,
-        &asset_server,
-        HORSE_MODEL,
+        horse_gltf,
         [HORSE_CLIP_IDLE, HORSE_CLIP_WALK, HORSE_CLIP_RUN, HORSE_CLIP_STOP],
         HORSE_WALK_CLIP_SPEED,
         HORSE_RUN_CLIP_SPEED,
@@ -145,8 +165,7 @@ pub fn load_animations(
     );
     let cow = quadruped(
         &mut graphs,
-        &asset_server,
-        COW_MODEL,
+        cow_gltf,
         [COW_CLIP_IDLE, COW_CLIP_WALK, COW_CLIP_RUN, COW_CLIP_STOP],
         COW_WALK_CLIP_SPEED,
         COW_RUN_CLIP_SPEED,
@@ -158,10 +177,9 @@ pub fn load_animations(
     // his bounce to whatever the horse is doing underneath him. Idling reuses
     // the walking seat, slowed: `cowboy_idle` is a standing pose and would put
     // his boots through the barrel.
-    let (rider_graph, rider_nodes) =
-        AnimationGraph::from_clips([COWBOY_CLIP_RIDE_WALK, COWBOY_CLIP_RIDE].map(|i| {
-            asset_server.load::<AnimationClip>(GltfAssetLabel::Animation(i).from_asset(COWBOY_MODEL))
-        }));
+    let (rider_graph, rider_nodes) = AnimationGraph::from_clips(
+        [COWBOY_CLIP_RIDE_WALK, COWBOY_CLIP_RIDE].map(|i| cowboy_gltf.animations[i].clone()),
+    );
     let rider = RigClips {
         graph: graphs.add(rider_graph),
         // Idle and walk are deliberately the same node: crossing the walk
@@ -177,6 +195,30 @@ pub fn load_animations(
     };
 
     commands.insert_resource(RigAnimations { horse, cow, rider });
+
+    let scenes = ModelScenes {
+        horse: horse_gltf.scenes[0].clone(),
+        cow: cow_gltf.scenes[0].clone(),
+        rider: cowboy_gltf.scenes[0].clone(),
+        _roots: [pending.horse.clone(), pending.cow.clone(), pending.cowboy.clone()],
+    };
+
+    let model_yaw = Quat::from_rotation_y(MODEL_YAW);
+    for cow in &cows {
+        commands.entity(cow).with_children(|c| {
+            c.spawn((
+                WorldAssetRoot(scenes.cow.clone()),
+                Transform::from_rotation(model_yaw),
+                Animated { rig: Rig::Cow, driver: cow },
+            ));
+        });
+    }
+    for player in &players {
+        crate::setup::spawn_horse_model(&mut commands, &scenes, player);
+    }
+
+    commands.insert_resource(scenes);
+    commands.remove_resource::<PendingModels>();
 }
 
 // ---------------------------------------------------------------------------
@@ -188,11 +230,12 @@ pub fn load_animations(
 /// free — the same setup blender/preview_ride.py renders to check it.
 pub fn mount_rider(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
+    scenes: Option<Res<ModelScenes>>,
     pending: Query<(Entity, &MountRider)>,
     children: Query<&Children>,
     names: Query<&Name>,
 ) {
+    let Some(scenes) = scenes else { return };
     for (horse, mount) in &pending {
         let Some(saddle) = children
             .iter_descendants(horse)
@@ -204,7 +247,7 @@ pub fn mount_rider(
         let driver = mount.driver;
         commands.entity(saddle).with_children(|c| {
             c.spawn((
-                WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(COWBOY_MODEL))),
+                WorldAssetRoot(scenes.rider.clone()),
                 Transform::from_rotation(Quat::from_rotation_x(SADDLE_FIX)),
                 Animated { rig: Rig::Rider, driver },
             ));
@@ -221,11 +264,12 @@ pub fn mount_rider(
 /// at the *first* `Animated` ancestor is what keeps the two apart.
 pub fn bind_animation_players(
     mut commands: Commands,
-    rigs: Res<RigAnimations>,
+    rigs: Option<Res<RigAnimations>>,
     models: Query<&Animated>,
     parents: Query<&ChildOf>,
     mut players: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
 ) {
+    let Some(rigs) = rigs else { return };
     for (entity, mut player) in &mut players {
         let mut node = entity;
         let model = loop {
@@ -265,10 +309,11 @@ pub fn bind_animation_players(
 /// that keeps its feet on the ground (see the gait notes in `config`).
 pub fn drive_gaits(
     time: Res<Time>,
-    rigs: Res<RigAnimations>,
+    rigs: Option<Res<RigAnimations>>,
     movers: Query<&Velocity>,
     mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions, &mut GaitState)>,
 ) {
+    let Some(rigs) = rigs else { return };
     let dt = time.delta_secs();
 
     for (mut player, mut transitions, mut state) in &mut players {

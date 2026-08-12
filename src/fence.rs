@@ -9,10 +9,49 @@
 //! Every piece shares one material, so a couple of hundred of them still batch
 //! down to a handful of draw calls.
 
+use bevy::gltf::{Gltf, GltfMesh};
 use bevy::prelude::*;
 
+use crate::components::GameLevel;
 use crate::config::*;
 use crate::level::Level;
+
+/// The fence .glb root, requested once by `setup` and consumed here when the
+/// parse lands. Loading the post and rail as labeled primitives would parse the
+/// file twice and re-fire asset events (see `PendingModels`); the root load
+/// parses once and hands out both mesh handles.
+#[derive(Resource)]
+pub struct PendingFences(pub Handle<Gltf>);
+
+/// Build the fences as soon as the .glb has parsed.
+pub fn spawn_fences_when_ready(
+    mut commands: Commands,
+    pending: Option<Res<PendingFences>>,
+    gltfs: Res<Assets<Gltf>>,
+    gltf_meshes: Res<Assets<GltfMesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+    level: Res<GameLevel>,
+) {
+    let Some(pending) = pending else { return };
+    let Some(gltf) = gltfs.get(&pending.0) else { return };
+    let (Some(post), Some(rail)) = (
+        gltf_meshes.get(&gltf.meshes[FENCE_MESH_POST]),
+        gltf_meshes.get(&gltf.meshes[FENCE_MESH_RAIL]),
+    ) else {
+        return;
+    };
+
+    spawn_fences(
+        &mut commands,
+        post.primitives[0].mesh.clone(),
+        rail.primitives[0].mesh.clone(),
+        &mut materials,
+        &asset_server,
+        &level.0,
+    );
+    commands.remove_resource::<PendingFences>();
+}
 
 /// Yaw that swings the rail's local +X onto `dir` (a unit vector on X/Z).
 ///
@@ -23,18 +62,14 @@ fn run_yaw(dir: Vec2) -> Quat {
 }
 
 /// Spawn the pen's fences and the field boundary.
-pub fn spawn_fences(
+fn spawn_fences(
     commands: &mut Commands,
-    asset_server: &AssetServer,
+    post_mesh: Handle<Mesh>,
+    rail_mesh: Handle<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    asset_server: &AssetServer,
     level: &Level,
 ) {
-    let post_mesh: Handle<Mesh> = asset_server.load(
-        GltfAssetLabel::Primitive { mesh: FENCE_MESH_POST, primitive: 0 }.from_asset(FENCE_MODEL),
-    );
-    let rail_mesh: Handle<Mesh> = asset_server.load(
-        GltfAssetLabel::Primitive { mesh: FENCE_MESH_RAIL, primitive: 0 }.from_asset(FENCE_MODEL),
-    );
     // The UVs are unwrapped inside 0..1, so the default clamping sampler is
     // fine and the texture never needs a repeat mode set on it.
     let wood = materials.add(StandardMaterial {

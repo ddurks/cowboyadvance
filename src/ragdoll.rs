@@ -28,6 +28,22 @@ pub struct Ragdoll {
     angvel: Vec3,
 }
 
+/// State for a short camera-space impact jolt. `offset` is removed before the
+/// next sample so the shake never drifts the otherwise fixed camera.
+#[derive(Resource, Default)]
+pub struct CameraShake {
+    elapsed: f32,
+    remaining: f32,
+    offset: Vec3,
+}
+
+impl CameraShake {
+    fn trigger(&mut self) {
+        self.elapsed = 0.0;
+        self.remaining = CAMERA_SHAKE_SECS;
+    }
+}
+
 /// Launch velocity: keep most of the pre-impact motion (the rider sails on over
 /// the handlebars) plus an amplified share of the impact's velocity change (a
 /// broadside slam batters him sideways), plus the vertical kick.
@@ -54,6 +70,7 @@ pub fn throw_players(
     models: Query<(&Animated, &GlobalTransform)>,
     children: Query<&Children>,
     mut velocities: Query<&mut Velocity, With<Player>>,
+    mut shake: ResMut<CameraShake>,
 ) {
     for throw in throws.0.drain(..) {
         // Find the model roots hanging under this player. The rider is nested
@@ -101,12 +118,42 @@ pub fn throw_players(
             timer: DOWNED_SECS,
             horse_gone: throw.horse_too,
         });
+        shake.trigger();
         // The riderless horse stands where the crash left it (collisions may
         // still shove it around) rather than gliding on under old momentum.
         if let Ok(mut vel) = velocities.get_mut(throw.player) {
             vel.0 = Vec2::ZERO;
         }
     }
+}
+
+/// Shake in the camera's own X/Y plane so the effect reads consistently at
+/// every window shape. Two mismatched frequencies avoid a mechanical wobble.
+pub fn camera_shake(
+    time: Res<Time>,
+    mut shake: ResMut<CameraShake>,
+    mut camera: Query<&mut Transform, With<GameCamera>>,
+) {
+    let Ok(mut tf) = camera.single_mut() else {
+        return;
+    };
+
+    // Undo exactly what the previous frame added before sampling a new offset.
+    tf.translation -= shake.offset;
+    shake.offset = Vec3::ZERO;
+    if shake.remaining <= 0.0 {
+        return;
+    }
+
+    let dt = time.delta_secs();
+    shake.elapsed += dt;
+    shake.remaining = (shake.remaining - dt).max(0.0);
+    let decay = (shake.remaining / CAMERA_SHAKE_SECS).powi(2);
+    let x = (shake.elapsed * 71.0).sin();
+    let y = (shake.elapsed * 53.0 + 1.7).sin();
+    let local = Vec3::new(x, y * 0.72, 0.0) * CAMERA_SHAKE_STRENGTH * decay;
+    shake.offset = tf.rotation * local;
+    tf.translation += shake.offset;
 }
 
 pub fn ragdoll_motion(time: Res<Time>, mut q: Query<(&mut Transform, &mut Ragdoll)>) {
@@ -141,7 +188,7 @@ pub fn ragdoll_motion(time: Res<Time>, mut q: Query<(&mut Transform, &mut Ragdol
 pub fn respawn_players(
     time: Res<Time>,
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
+    scenes: Option<Res<ModelScenes>>,
     mut players: Query<
         (Entity, &mut Downed, &mut Transform, &mut Velocity, &mut ModelTint),
         With<Player>,
@@ -150,6 +197,9 @@ pub fn respawn_players(
     models: Query<(Entity, &Animated)>,
     children: Query<&Children>,
 ) {
+    // No one can be thrown before the models exist, so waiting costs nothing.
+    let Some(scenes) = scenes else { return };
+
     let dt = time.delta_secs();
     for (player, mut downed, mut tf, mut vel, mut tint) in &mut players {
         downed.timer -= dt;
@@ -168,7 +218,7 @@ pub fn respawn_players(
         vel.0 = Vec2::ZERO;
 
         if downed.horse_gone {
-            spawn_horse_model(&mut commands, &asset_server, player);
+            spawn_horse_model(&mut commands, &scenes, player);
         } else {
             let mut horse = None;
             let mut rider_still_seated = false;

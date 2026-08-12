@@ -118,12 +118,14 @@ const TRAMPLE_HZ: f32 = 20.0;
 /// Radius scale applied to a trampler's collision radius when stamping.
 const STAMP_RADIUS_SCALE: f32 = 0.85;
 
-/// Kept close to `GROUND_COLOR` (0.34, 0.56, 0.28) on purpose. Grass that
-/// contrasts hard with the ground reads as speckle; grass that brackets it
-/// reads as texture.
-const GRASS_BASE_COLOR: (f32, f32, f32) = (0.24, 0.42, 0.20);
-const GRASS_TIP_COLOR: (f32, f32, f32) = (0.42, 0.62, 0.28);
-const GRASS_DRY_COLOR: (f32, f32, f32) = (0.44, 0.40, 0.22);
+/// Pitched against the ground *as rendered*, not its albedo — the blades are
+/// unlit, so they only read by contrast with the lit, textured ground plane.
+/// Sits a step BELOW it (tips nearest, base deepest): with the mottled ground
+/// texture underneath, darker blades stay visible where lighter ones vanished
+/// into the bright field.
+const GRASS_BASE_COLOR: (f32, f32, f32) = (0.20, 0.35, 0.16);
+const GRASS_TIP_COLOR: (f32, f32, f32) = (0.30, 0.49, 0.23);
+const GRASS_DRY_COLOR: (f32, f32, f32) = (0.40, 0.36, 0.19);
 
 const WIND_DIR: Vec2 = Vec2::new(0.82, 0.57);
 const WIND_SPEED: f32 = 1.6;

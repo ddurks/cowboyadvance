@@ -57,13 +57,14 @@ impl Level {
         // cows have to be driven through reads at a glance.
         let posts = vec![Vec2::new(-g, z), Vec2::new(g, z)];
 
-        // The field edge: the two long sides, running from the pen line down past
-        // the bottom of the view. The near (+Z) end is left open — it sits below
-        // the view behind the cabinet's hump — and so is everything above the pen
-        // line, which is where captured cows walk off to.
+        // The field edge: the two long sides running from the pen line down to
+        // the near edge, closed by a bottom run that shows beside the cabinet's
+        // hump (the hump art hides its middle). Only the strip above the pen
+        // line is open — that's where captured cows walk off to.
         let boundary = vec![
             Fence { a: Vec2::new(-hx, z), b: Vec2::new(-hx, FIELD_Z_NEAR) },
             Fence { a: Vec2::new(hx, z), b: Vec2::new(hx, FIELD_Z_NEAR) },
+            Fence { a: Vec2::new(-hx, FIELD_Z_NEAR), b: Vec2::new(hx, FIELD_Z_NEAR) },
         ];
 
         Self { fences, posts, boundary }

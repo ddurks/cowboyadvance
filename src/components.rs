@@ -3,6 +3,7 @@
 //! The gameplay logic itself lives in the engine-agnostic `sim` module; these
 //! types are just the Bevy-side wiring that feeds it.
 
+use bevy::gltf::Gltf;
 use bevy::prelude::*;
 
 use crate::level::Level;
@@ -53,6 +54,43 @@ pub struct PenCounter;
 
 #[derive(Resource)]
 pub struct GameLevel(pub Level);
+
+/// The character .glb roots, requested once by `anim::load_models` and consumed
+/// by `anim::finish_models` when all three have parsed.
+///
+/// Loading a *labeled* sub-asset (`Scene(0)`, `Animation(2)`, …) triggers its
+/// own full fetch and parse of the source file, and every parse re-inserts all
+/// of the file's sub-assets. On desktop the duplicate parses land within the
+/// world-asset spawner's debounce window; over HTTP they finish seconds apart,
+/// so each late parse fires `Modified` on an already-spawned scene, which the
+/// spawner answers by despawning and rebuilding every instance — wiping the
+/// runtime vertex bakes (hide splotches, foam grain) and despawning the rider
+/// with the saddle joint he was parented under. One root load per file means
+/// one parse, one `Added`, no storms — and one download instead of five.
+#[derive(Resource)]
+pub struct PendingModels {
+    pub horse: Handle<Gltf>,
+    pub cow: Handle<Gltf>,
+    pub cowboy: Handle<Gltf>,
+}
+
+/// Session-lifetime strong handles to the character scenes. Model entities are
+/// despawned and rebuilt across ragdoll respawns; if one of them held the last
+/// handle, the despawn would unload the scene and the respawn would re-fetch it
+/// — a whole HTTP round trip on web — and the unload/reload churn can catch the
+/// world-asset spawner between its Modified-event read and the instance update,
+/// where a missing asset is a panic (`NonExistentWorldAsset`).
+///
+/// Inserted by `anim::finish_models` once the .glb parses land, so consumers
+/// take it as `Option<Res>` and wait.
+#[derive(Resource)]
+pub struct ModelScenes {
+    pub horse: Handle<WorldAsset>,
+    pub cow: Handle<WorldAsset>,
+    pub rider: Handle<WorldAsset>,
+    /// The parsed .glb roots, never read — held only so no sub-asset unloads.
+    pub _roots: [Handle<Gltf>; 3],
+}
 
 /// Marks the 3D game camera, whose window viewport is resized each frame to the
 /// cabinet's scene rect.

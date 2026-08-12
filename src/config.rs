@@ -30,10 +30,12 @@ pub const FIELD_HALF_X: f32 = 13.67;
 pub const FIELD_HALF_Z: f32 = 34.0;
 pub const BOUNDARY_MARGIN: f32 = 4.0;
 
-// Near (bottom, +Z) edge. Straight, and pushed down to fill the full visible view
-// (the scene extends behind the bottom frame piece); entities may pass under the
-// hump — that's fine, it just hides them briefly.
-pub const FIELD_Z_NEAR: f32 = 40.0;
+// Near (bottom, +Z) edge. On screen: the visible scene bottom (where the
+// bottom frame piece takes over) sits at z ≈ 28.8 on the guaranteed play box,
+// so the fence line here shows just above it, flanking the frame's hump —
+// entities now stop at a fence the player can see instead of wandering under
+// the frame.
+pub const FIELD_Z_NEAR: f32 = 27.5;
 
 // ---------------------------------------------------------------------------
 // Camera (angled orthographic — real 3D, no perspective foreshortening)
@@ -45,8 +47,14 @@ pub const FIELD_Z_NEAR: f32 = 40.0;
 /// — modelled at a fixed size — render this much larger.
 pub const CAM_ZOOM: f32 = 1.5;
 
-/// Ground point the camera looks at (X, Z). Centred on the vertical play area.
-pub const CAM_TARGET: Vec2 = Vec2::new(0.0, -1.33);
+/// Ground point the camera looks at (X, Z). Centred on the vertical play area,
+/// plus a fixed -Z (up-screen) nudge: the viewport spans the whole cabinet (the
+/// scene renders behind the top wood strip too), which lifts AutoMin's centre by
+/// half the strip's height — `FRAME_TOP_H_FRAC / 2 * CAM_MIN_WIDTH / cos 45° ≈
+/// 1.9` z-units at any window size. Aiming that much further up-screen drops
+/// the play area back where it was, leaving the extra revealed world tucked
+/// under the strip.
+pub const CAM_TARGET: Vec2 = Vec2::new(0.0, -3.23);
 /// Camera offset from its target: high up and pulled back along +Z for a ~45°
 /// downward pitch so cubes show their height. Screen-up maps to world -Z. The
 /// magnitude only frames the near/far planes (orthographic size comes from the
@@ -58,6 +66,32 @@ pub const CAM_OFFSET: Vec3 = Vec3::new(0.0, 26.67, 26.67);
 /// were scaled by the reciprocal by hand — re-zoom here and they must move too.
 pub const CAM_MIN_WIDTH: f32 = 44.0 / CAM_ZOOM;
 pub const CAM_MIN_HEIGHT: f32 = 64.0 / CAM_ZOOM;
+
+// ---------------------------------------------------------------------------
+// Lighting — phase 1 of the "crisp" pass (Mario vs. DK-style toy look): a
+// strong sun with tight shadows and real contrast, no washed-out ambient.
+// ---------------------------------------------------------------------------
+
+/// Sun position (it looks at the origin). On the *camera's* side of the sky
+/// (+Z, offset left): the camera then sees the characters' lit faces, not
+/// their shade side — with the sun behind the field they only read via ambient
+/// and washed out. Shadows fall up-right, peeking around each body. Elevation
+/// ~53°.
+pub const SUN_POSITION: Vec3 = Vec3::new(-18.0, 42.0, 26.0);
+/// Bright enough to model form at default camera exposure. Walked down from 9k
+/// in two rounds of "still a bit bright"; 12k read as washed-out pastel.
+pub const SUN_ILLUMINANCE: f32 = 6_800.0;
+/// Fill: enough that shadows read as soft shade rather than hard black, but
+/// under the old 240, which flattened the whole scene into its albedo.
+pub const AMBIENT_BRIGHTNESS: f32 = 185.0;
+
+/// Single shadow cascade clamped to what the fixed camera can actually see
+/// (nearest visible ground is ~29 units from the camera, farthest ~70). The
+/// default 4 cascades spread over ~1000 units left a handful of shadow texels
+/// on the play field; this puts the whole 2048 map on it — sharper shadows AND
+/// less GPU work.
+pub const SHADOW_MIN_DISTANCE: f32 = 22.0;
+pub const SHADOW_MAX_DISTANCE: f32 = 78.0;
 
 // ---------------------------------------------------------------------------
 // Frame HUD. The bezel art is split into two pieces so it never distorts: a top
@@ -183,6 +217,10 @@ pub const RAGDOLL_GRAVITY: f32 = 30.0;
 pub const RAGDOLL_BOUNCE: f32 = 0.4;
 /// Max tumble rate, rad/s.
 pub const RAGDOLL_SPIN: f32 = 9.0;
+/// Brief screen-space jolt when a rider is thrown. Kept small so the cabinet
+/// remains visually stable while the playfield takes the hit.
+pub const CAMERA_SHAKE_SECS: f32 = 0.32;
+pub const CAMERA_SHAKE_STRENGTH: f32 = 0.34;
 /// How long a player stays down (ragdoll plays out) before respawning.
 pub const DOWNED_SECS: f32 = 2.4;
 /// Where a respawned player reappears (also the startup spawn).
@@ -359,6 +397,29 @@ pub const GATE_POST_SCALE: f32 = 1.45;
 // ---------------------------------------------------------------------------
 
 pub const GROUND_COLOR: (f32, f32, f32) = (0.34, 0.56, 0.28);
+
+// ---------------------------------------------------------------------------
+// Ground texture: the foam grain extended to the field, plus a short
+// grass/dirt mottle. Generated at startup (setup::ground_image) as a tileable
+// tint map multiplied over `GROUND_COLOR`, so that stays the colour knob.
+// ---------------------------------------------------------------------------
+
+/// Texture edge in pixels. With `GROUND_TEX_REPEAT` tiles over the 400-unit
+/// ground plane a texel lands at ~0.05 world units — about one screen pixel at
+/// gameplay zoom, matching the characters' per-vertex foam speckle.
+pub const GROUND_TEX_SIZE: usize = 256;
+/// Times the texture repeats across the ground plane (via `uv_transform`).
+pub const GROUND_TEX_REPEAT: f32 = 32.0;
+/// Brightness swing of each octave, around 1.0: coarse grass patchiness, mid
+/// mottle, fine foam grain. Kept low so the field reads as texture, not noise.
+pub const GROUND_PATCH_AMP: f32 = 0.045;
+pub const GROUND_MOTTLE_AMP: f32 = 0.05;
+pub const GROUND_GRAIN_AMP: f32 = 0.06;
+/// Sparse dirt speckles: the value-noise threshold that leaves a few percent of
+/// the field speckled (noise clusters around 0.5, so 0.72 is already rare), and
+/// the warm multiplier the speckles pull toward.
+pub const GROUND_DIRT_THRESH: f32 = 0.72;
+pub const GROUND_DIRT_TINT: (f32, f32, f32) = (0.92, 0.80, 0.62);
 pub const COW_PENNED_COLOR: (f32, f32, f32) = (0.35, 0.80, 0.40);
 
 /// The bezel's base brown, `#5e4123` — the exact flat fill the frame art is

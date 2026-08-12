@@ -14,10 +14,12 @@ mod components;
 mod config;
 mod dust;
 mod fence;
+mod foam;
 mod grass;
 mod hide;
 mod input;
 mod level;
+mod loading;
 mod noise;
 mod ragdoll;
 mod setup;
@@ -50,11 +52,16 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins((grass::GrassPlugin, hide::CowHidePlugin, dust::DustPlugin))
+        .add_plugins((
+            grass::GrassPlugin,
+            hide::CowHidePlugin,
+            dust::DustPlugin,
+            foam::FoamPlugin,
+        ))
         .init_resource::<cabinet::CabinetLayout>()
         .init_resource::<components::PendingThrows>()
-        // Animation graphs before the scene, so the models find them waiting.
-        .add_systems(Startup, (anim::load_animations, setup::setup).chain())
+        .init_resource::<ragdoll::CameraShake>()
+        .add_systems(Startup, (anim::load_models, setup::setup).chain())
         .add_systems(
             Update,
             (
@@ -68,13 +75,19 @@ fn main() {
                 // the horse) into a ballistic tumble.
                 systems::body_collisions,
                 ragdoll::throw_players,
+                ragdoll::camera_shake,
                 ragdoll::ragdoll_motion,
                 ragdoll::respawn_players,
-                // Models spawn asynchronously, so these keep watching for parts
-                // that have only just appeared.
+                // The .glbs parse asynchronously; these finish construction as
+                // the pieces arrive, then keep watching for spawned parts.
+                anim::finish_models,
+                fence::spawn_fences_when_ready,
                 anim::mount_rider,
                 anim::bind_animation_players,
                 anim::apply_model_tint,
+                // The web overlay stays above every camera until all streamed
+                // character scenes have completed their runtime setup.
+                loading::finish_loading,
                 // Gaits read the velocities the movement systems just wrote.
                 anim::drive_gaits,
                 systems::update_hud,
