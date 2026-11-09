@@ -32,6 +32,12 @@
 //! Two channels rather than one is what sells it: flatten springs back almost
 //! at once, while wear lingers, so driving cattle over the same ground carves
 //! semi-permanent trails across the field.
+//!
+//! **Both stream with the camera.** The range is far too big to grow grass
+//! over all of it, so square chunks are built (deterministically, from their
+//! grid coordinates) as they come into reach of the camera and dropped as they
+//! leave; and the trample map is a window that scrolls along, shifting its
+//! texels so trails stay put in the world.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -55,19 +61,21 @@ use crate::level::Level;
 // Tuning
 // ---------------------------------------------------------------------------
 
-/// The play field, which is the area the trample map covers — tramplers are
-/// clamped to it, so nothing outside can ever be walked on.
-const FIELD_MIN: Vec2 = Vec2::new(-FIELD_HALF_X, -FIELD_HALF_Z);
-const FIELD_SIZE: Vec2 = Vec2::new(FIELD_HALF_X * 2.0, FIELD_Z_NEAR + FIELD_HALF_Z);
-
-/// Grass grows past the play field. `AutoMin` reveals more ground than
-/// `CAM_MIN_HEIGHT` on tall viewports, so grass that stopped at the field edge
-/// left a visible bald strip along the top of the screen.
-const GRASS_MARGIN: f32 = 16.0;
-const GRASS_MIN: Vec2 = Vec2::new(FIELD_MIN.x - GRASS_MARGIN, FIELD_MIN.y - GRASS_MARGIN);
-const GRASS_SIZE: Vec2 = Vec2::new(
-    FIELD_SIZE.x + GRASS_MARGIN * 2.0,
-    FIELD_SIZE.y + GRASS_MARGIN * 2.0,
+/// Edge of one square grass chunk. Small enough that the ring built as the
+/// camera crosses a chunk line is a cheap CPU job, big enough that the visible
+/// area is a few dozen draw calls.
+const CHUNK_SIZE: f32 = 16.0;
+/// Chunks kept either side of the one under the camera focus (X, Z). The view
+/// shows ~±17 units across and ~±45 deep (45° pitch stretches screen height
+/// by √2 on the ground), so 2 and 3 chunks cover it with slack to stream in
+/// before an edge is ever seen.
+const GRASS_REACH_CHUNKS: IVec2 = IVec2::new(2, 3);
+/// The contiguous block of grass grown at startup around the origin. Public for
+/// the painting example, which tiles copies of it to the horizon.
+#[allow(dead_code)] // only the painting example reads it
+pub const GRASS_BLOCK: Vec2 = Vec2::new(
+    (GRASS_REACH_CHUNKS.x * 2 + 1) as f32 * CHUNK_SIZE,
+    (GRASS_REACH_CHUNKS.y * 2 + 1) as f32 * CHUNK_SIZE,
 );
 
 /// Tuft centres per square unit. Each centre grows `BLADES_PER_TUFT` blades,
@@ -82,12 +90,6 @@ const BLADES_PER_TUFT: usize = 3;
 /// the rest, so the effective density is roughly 0.75x the number above.
 const CLUMP_FLOOR: f32 = 0.30;
 
-/// Chunking is a trade: more chunks cull better, fewer mean fewer draw calls.
-/// With grass extending past the field there is real off-screen area to cull,
-/// so 15 chunks pays for itself and is still nothing for a mobile GPU.
-const CHUNKS_X: usize = 3;
-const CHUNKS_Z: usize = 5;
-
 /// Blade dimensions. Width is narrow relative to height; several blades grow
 /// close together so their combined silhouette remains substantial on mobile.
 const BLADE_HEIGHT: (f32, f32) = (0.62, 1.18);
@@ -100,11 +102,17 @@ const TUFT_LEAN: f32 = 0.22;
 /// looking like it was combed.
 const TUFT_YAW_JITTER: f32 = 0.42;
 
-/// Trample map resolution. 128x256 over a 44x100 field is ~0.35 units/texel,
-/// so a cow (radius 1.1) covers ~6 texels — enough for smooth trails, small
-/// enough that re-uploading it is free.
+/// Trample map resolution, and the ground window it covers around the camera
+/// focus: ~0.375 units/texel, so a cow (radius 1.1) covers ~6 texels — enough
+/// for smooth trails, small enough that re-uploading it is free. The window
+/// reaches a little past what the camera shows; trails beyond it simply aren't
+/// drawn.
 const TRAMPLE_W: usize = 128;
 const TRAMPLE_H: usize = 256;
+const TRAMPLE_SPAN: Vec2 = Vec2::new(48.0, 96.0);
+/// The window re-centres once the focus strays this far from its middle — in
+/// whole texels, so the shifted trails land exactly where they were.
+const TRAMPLE_RECENTER: f32 = 6.0;
 
 /// Seconds for flattened grass to stand back up, and for a worn trail to fade.
 const FLATTEN_RECOVER_SECS: f32 = 3.2;
@@ -153,7 +161,7 @@ impl Plugin for GrassPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<GrassMaterial>::default())
             .add_systems(Startup, setup_grass.after(crate::setup::setup))
-            .add_systems(Update, update_trample);
+            .add_systems(Update, (stream_grass, update_trample));
     }
 }
 
@@ -234,6 +242,10 @@ impl Material for GrassMaterial {
 #[derive(Resource)]
 struct TrampleMap {
     image: Handle<Image>,
+    /// The grass material carries the window's world rect for the shader.
+    material: Handle<GrassMaterial>,
+    /// World (X, Z) of texel (0, 0)'s corner.
+    origin: Vec2,
     /// Texel bounds of everything currently non-zero, so decay touches a small
     /// rect instead of all 32k texels. Cattle cluster; this is usually tiny.
     dirty: Option<[usize; 4]>,
@@ -260,11 +272,51 @@ impl TrampleMap {
     }
 }
 
-/// World XZ -> trample texel coordinates (fractional).
-fn world_to_texel(p: Vec2) -> Vec2 {
-    let uv = (p - FIELD_MIN) / FIELD_SIZE;
-    Vec2::new(uv.x * TRAMPLE_W as f32, uv.y * TRAMPLE_H as f32)
+fn texel_size() -> Vec2 {
+    TRAMPLE_SPAN / Vec2::new(TRAMPLE_W as f32, TRAMPLE_H as f32)
 }
+
+impl TrampleMap {
+    /// World XZ -> trample texel coordinates (fractional).
+    fn world_to_texel(&self, p: Vec2) -> Vec2 {
+        (p - self.origin) / texel_size()
+    }
+
+    /// The window's world rect, as the shader wants it.
+    fn field(&self) -> Vec4 {
+        Vec4::new(self.origin.x, self.origin.y, TRAMPLE_SPAN.x, TRAMPLE_SPAN.y)
+    }
+}
+
+/// Window origin for a given centre, snapped to the texel grid so a shift
+/// moves trails by whole texels and never resamples them.
+fn snapped_origin(centre: Vec2) -> Vec2 {
+    let t = texel_size();
+    ((centre - TRAMPLE_SPAN * 0.5) / t).round() * t
+}
+
+/// Scroll the trample texels by `(dx, dy)` whole texels: the new texel
+/// (x, y) shows what the old (x + dx, y + dy) held; anything scrolled in is
+/// untouched grass.
+fn shift_texels(pixels: &mut [u8], dx: i32, dy: i32) {
+    let old = pixels.to_vec();
+    for y in 0..TRAMPLE_H as i32 {
+        for x in 0..TRAMPLE_W as i32 {
+            let i = (y as usize * TRAMPLE_W + x as usize) * 4;
+            let (sx, sy) = (x + dx, y + dy);
+            let texel = if (0..TRAMPLE_W as i32).contains(&sx) && (0..TRAMPLE_H as i32).contains(&sy) {
+                let j = (sy as usize * TRAMPLE_W + sx as usize) * 4;
+                [old[j], old[j + 1], old[j + 2], old[j + 3]]
+            } else {
+                UNTRAMPLED
+            };
+            pixels[i..i + 4].copy_from_slice(&texel);
+        }
+    }
+}
+
+/// flatten 0, wear 0, direction encoded as (0.5, 0.5) == zero vector
+const UNTRAMPLED: [u8; 4] = [0, 0, 128, 128];
 
 fn make_trample_image() -> Image {
     let mut image = Image::new_fill(
@@ -274,8 +326,7 @@ fn make_trample_image() -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        // flatten 0, wear 0, direction encoded as (0.5, 0.5) == zero vector
-        &[0, 0, 128, 128],
+        &UNTRAMPLED,
         TextureFormat::Rgba8Unorm,
         // Kept in the main world so the CPU can keep stamping into it.
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
@@ -295,6 +346,13 @@ fn make_trample_image() -> Image {
 // Setup
 // ---------------------------------------------------------------------------
 
+/// Live grass chunks by grid coordinate, plus what building one needs.
+#[derive(Resource)]
+struct GrassChunks {
+    live: HashMap<IVec2, Entity>,
+    material: Handle<GrassMaterial>,
+}
+
 fn setup_grass(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -303,10 +361,11 @@ fn setup_grass(
     level: Res<crate::components::GameLevel>,
 ) {
     let trample = images.add(make_trample_image());
+    let origin = snapped_origin(Vec2::ZERO);
 
     let material = materials.add(GrassMaterial {
         params: GrassParams {
-            field: Vec4::new(FIELD_MIN.x, FIELD_MIN.y, FIELD_SIZE.x, FIELD_SIZE.y),
+            field: Vec4::new(origin.x, origin.y, TRAMPLE_SPAN.x, TRAMPLE_SPAN.y),
             wind: Vec4::new(
                 WIND_DIR.x,
                 WIND_DIR.y,
@@ -321,38 +380,89 @@ fn setup_grass(
         trample: trample.clone(),
     });
 
-    let chunk = Vec2::new(
-        GRASS_SIZE.x / CHUNKS_X as f32,
-        GRASS_SIZE.y / CHUNKS_Z as f32,
-    );
-    let mut total = 0usize;
-    for cz in 0..CHUNKS_Z {
-        for cx in 0..CHUNKS_X {
-            let min = GRASS_MIN + Vec2::new(cx as f32 * chunk.x, cz as f32 * chunk.y);
-            let centre = min + chunk * 0.5;
-            let seed = (cz * CHUNKS_X + cx) as u64 * 0x9E37_79B9;
-            let Some((mesh, count)) = build_chunk(centre, chunk, seed, &level.0) else {
-                continue;
-            };
-            total += count;
-            commands.spawn((
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material.clone()),
-                Transform::from_xyz(centre.x, 0.0, centre.y),
-            ));
-        }
+    // Grown here, around the origin, rather than left to `stream_grass`: the
+    // painting example has no camera focus and tiles whatever exists after
+    // startup.
+    let mut chunks = GrassChunks { live: HashMap::default(), material: material.clone() };
+    for coord in chunks_in_reach(Vec2::ZERO, 0) {
+        let entity = spawn_chunk(&mut commands, &mut meshes, &chunks.material, coord, &level.0);
+        chunks.live.insert(coord, entity);
     }
+    commands.insert_resource(chunks);
 
     commands.insert_resource(TrampleMap {
         image: trample,
+        material,
+        origin,
         dirty: None,
         flatten_debt: 0.0,
         wear_debt: 0.0,
         accum: 0.0,
         prev: HashMap::default(),
     });
+}
 
-    info!("grass: {total} tufts across {} chunks", CHUNKS_X * CHUNKS_Z);
+/// Grid coordinates of every chunk within reach of `focus`, widened by
+/// `slack` chunks (the hysteresis that stops a chunk on the boundary being
+/// rebuilt every frame the focus wobbles).
+fn chunks_in_reach(focus: Vec2, slack: i32) -> impl Iterator<Item = IVec2> {
+    let centre = (focus / CHUNK_SIZE).round().as_ivec2();
+    let r = GRASS_REACH_CHUNKS + IVec2::splat(slack);
+    (-r.y..=r.y).flat_map(move |dz| (-r.x..=r.x).map(move |dx| centre + IVec2::new(dx, dz)))
+}
+
+fn spawn_chunk(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    material: &Handle<GrassMaterial>,
+    coord: IVec2,
+    level: &Level,
+) -> Entity {
+    // Chunks are centred on multiples of `CHUNK_SIZE`, so the startup block
+    // sits symmetric about the corral.
+    let centre = coord.as_vec2() * CHUNK_SIZE;
+    let seed = (coord.x as u32 as u64) << 32 | coord.y as u32 as u64;
+    let mut entity = commands.spawn((
+        Transform::from_xyz(centre.x, 0.0, centre.y),
+        Visibility::default(),
+        GrassChunk,
+    ));
+    // A chunk drowned entirely in river grows nothing; it stays as an empty
+    // marker so the streamer doesn't retry it every frame.
+    if let Some(mesh) = build_chunk(centre, Vec2::splat(CHUNK_SIZE), seed, level) {
+        entity.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
+    }
+    entity.id()
+}
+
+#[derive(Component)]
+struct GrassChunk;
+
+/// Grow the chunks coming into reach of the camera; drop the ones well out of it.
+fn stream_grass(
+    mut commands: Commands,
+    focus: Option<Res<crate::components::CameraFocus>>,
+    mut chunks: Option<ResMut<GrassChunks>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    level: Res<crate::components::GameLevel>,
+) {
+    let (Some(focus), Some(chunks)) = (focus, chunks.as_mut()) else {
+        return;
+    };
+    let keep: Vec<IVec2> = chunks_in_reach(focus.0, 1).collect();
+    chunks.live.retain(|coord, entity| {
+        let kept = keep.contains(coord);
+        if !kept {
+            commands.entity(*entity).despawn();
+        }
+        kept
+    });
+    for coord in chunks_in_reach(focus.0, 0) {
+        if !chunks.live.contains_key(&coord) {
+            let entity = spawn_chunk(&mut commands, &mut meshes, &chunks.material, coord, &level.0);
+            chunks.live.insert(coord, entity);
+        }
+    }
 }
 
 fn color_vec4(c: (f32, f32, f32)) -> Vec4 {
@@ -362,7 +472,7 @@ fn color_vec4(c: (f32, f32, f32)) -> Vec4 {
 
 /// Build one chunk's mesh. Vertices are chunk-local so the entity transform
 /// carries the world position and Bevy's computed AABB stays tight for culling.
-fn build_chunk(centre: Vec2, size: Vec2, seed: u64, level: &Level) -> Option<(Mesh, usize)> {
+fn build_chunk(centre: Vec2, size: Vec2, seed: u64, level: &Level) -> Option<Mesh> {
     let count = (size.x * size.y * TUFTS_PER_UNIT2) as usize;
     let half = size * 0.5;
 
@@ -444,18 +554,19 @@ fn build_chunk(centre: Vec2, size: Vec2, seed: u64, level: &Level) -> Option<(Me
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(ATTRIBUTE_GRASS, VertexAttributeValues::Unorm8x4(data));
     mesh.insert_indices(Indices::U16(indices));
-    Some((mesh, tufts))
+    Some(mesh)
 }
 
-/// True where a tuft would grow through the fence rails or a gate post.
-/// `p` is in world space.
+/// True where a tuft would grow through the fence rails, a gate post, or the
+/// river. `p` is in world space.
 fn blocked(p: Vec2, level: &Level) -> bool {
     let clearance = FENCE_THICK * 0.5 + 0.28;
-    level
-        .fences
-        .iter()
-        .chain(level.boundary.iter())
-        .any(|f| f.closest_point(p).distance_squared(p) < clearance * clearance)
+    let r = p.length();
+    (RANGE_RADIUS - 0.3..RANGE_RADIUS + RIVER_WIDTH + 0.3).contains(&r)
+        || level
+            .fences
+            .iter()
+            .any(|f| f.closest_point(p).distance_squared(p) < clearance * clearance)
         || level.posts.iter().any(|q| q.distance_squared(p) < 0.49)
 }
 
@@ -467,8 +578,10 @@ fn blocked(p: Vec2, level: &Level) -> bool {
 #[allow(clippy::type_complexity)]
 fn update_trample(
     time: Res<Time>,
+    focus: Option<Res<crate::components::CameraFocus>>,
     mut map: ResMut<TrampleMap>,
     mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<GrassMaterial>>,
     movers: Query<(Entity, &Transform), Or<(With<Player>, With<Cow>)>>,
 ) {
     map.accum += time.delta_secs();
@@ -500,6 +613,22 @@ fn update_trample(
         return;
     };
 
+    if let Some(focus) = focus {
+        let centre = map.origin + TRAMPLE_SPAN * 0.5;
+        let off = focus.0 - centre;
+        if off.x.abs() > TRAMPLE_RECENTER || off.y.abs() > TRAMPLE_RECENTER {
+            let origin = snapped_origin(focus.0);
+            let shift = ((origin - map.origin) / texel_size()).round().as_ivec2();
+            shift_texels(pixels, shift.x, shift.y);
+            map.origin = origin;
+            map.dirty = Some([0, 0, TRAMPLE_W - 1, TRAMPLE_H - 1]);
+            let field = map.field();
+            if let Some(mut material) = materials.get_mut(&map.material) {
+                material.params.field = field;
+            }
+        }
+    }
+
     for s in strokes {
         stamp_stroke(&mut map, pixels, s, step);
     }
@@ -521,12 +650,9 @@ struct Stroke {
 /// costs the same handful of texel tests.
 fn stamp_stroke(map: &mut TrampleMap, pixels: &mut [u8], stroke: Stroke, step: f32) {
     let Stroke { from, to, radius } = stroke;
-    let a = world_to_texel(from);
-    let b = world_to_texel(to);
-    let r = Vec2::new(
-        radius / FIELD_SIZE.x * TRAMPLE_W as f32,
-        radius / FIELD_SIZE.y * TRAMPLE_H as f32,
-    );
+    let a = map.world_to_texel(from);
+    let b = map.world_to_texel(to);
+    let r = Vec2::splat(radius) / texel_size();
     let rad = r.x.max(r.y);
 
     let min_x = (a.x.min(b.x) - rad).floor().max(0.0) as usize;

@@ -61,7 +61,7 @@ fn run_yaw(dir: Vec2) -> Quat {
     Quat::from_rotation_y((-dir.y).atan2(dir.x))
 }
 
-/// Spawn the pen's fences and the field boundary.
+/// Spawn the corral's fences.
 fn spawn_fences(
     commands: &mut Commands,
     post_mesh: Handle<Mesh>,
@@ -82,7 +82,7 @@ fn spawn_fences(
     // corner shared by two runs only gets one post.
     let mut posts: Vec<Vec2> = Vec::new();
 
-    for f in level.fences.iter().chain(level.boundary.iter()) {
+    for f in &level.fences {
         let delta = f.b - f.a;
         let len = delta.length();
         if len < 1e-3 {
@@ -111,8 +111,7 @@ fn spawn_fences(
         }
     }
 
-    // Drop posts that coincide — the pen's corners and the gate ends each turn
-    // up twice, and stacking identical geometry z-fights.
+    // Drop posts that coincide — the corral's corners each turn up twice, and stacking identical geometry z-fights.
     let mut placed: Vec<Vec2> = Vec::with_capacity(posts.len());
     for p in posts {
         if placed.iter().any(|q| q.distance_squared(p) < 0.01) {

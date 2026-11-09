@@ -90,8 +90,7 @@ pub fn compute_layout(w: f32, h: f32) -> CabinetLayout {
     // The scene (the game viewport) fills the whole cabinet, so the game
     // renders *behind* both frame pieces — their transparent edges reveal the
     // field instead of a sliver of background, and the bottom piece's flanks
-    // show it beside the hump. `CAM_TARGET` carries a fixed offset compensating
-    // for the extra viewport height above the play area (see config).
+    // show it beside the hump.
     let screen = RectPx { x: cx, y: cy, w: cw, h: ch };
 
     // Joystick on the hump, inside the bottom piece.

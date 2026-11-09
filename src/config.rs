@@ -8,62 +8,42 @@ use bevy::math::{Vec2, Vec3};
 use core::f32::consts::{FRAC_PI_2, PI};
 
 // ---------------------------------------------------------------------------
-// Field / world. The simulation runs on the X/Z ground plane (Y is up).
+// The range. The simulation runs on the X/Z ground plane (Y is up): a round
+// range centred on the corral at the origin, ringed by a river.
 // ---------------------------------------------------------------------------
 
-// Portrait-oriented field: narrow in X, long in Z (herd "up" the screen, -Z).
-//
-// Held just inside `CAM_MIN_WIDTH / 2` so the side fences land *inside* the
-// view rather than exactly on its edge, where they were being clipped to a
-// half-post sliver. The strip of grass beyond them is what makes them read as
-// the edge of the field instead of the edge of the screen.
-//
-// This width (and the herd/player spawns and camera target/offset) was scaled
-// down by `CAM_ZOOM` in lockstep with the camera's play box, so pulling the
-// camera in leaves the fenced area the same size on screen while the characters
-// — which keep their modelled size — grow by `CAM_ZOOM`.
-pub const FIELD_HALF_X: f32 = 13.67;
-// Deep enough that its top edge (the clamp ceiling) sits just past `PEN_LINE_Z`,
-// so a herded cow can only get over the line by threading the gap. Not scaled as
-// hard as the width: the far edge is off-screen anyway, and this keeps the pen
-// line up under the top frame with a little grass showing above it.
-pub const FIELD_HALF_Z: f32 = 34.0;
+/// Radius of the rideable range — the river's near bank. The spec's "~30 s from
+/// the corral to the edge" taken at full gallop would be ~570 units, hundreds of
+/// screens of grass for 120 cows; read at driving pace instead (a pushed herd
+/// averages ~5–6 u/s) it is ~160. Shrink before adding cows if it feels empty.
+pub const RANGE_RADIUS: f32 = 160.0;
+/// The inward push starts this far inside the bank.
 pub const BOUNDARY_MARGIN: f32 = 4.0;
-
-// Near (bottom, +Z) edge. On screen: the visible scene bottom (where the
-// bottom frame piece takes over) sits at z ≈ 28.8 on the guaranteed play box,
-// so the fence line here shows just above it, flanking the frame's hump —
-// entities now stop at a fence the player can see instead of wandering under
-// the frame.
-pub const FIELD_Z_NEAR: f32 = 27.5;
+/// Wide enough to read as a river rather than a ditch at gameplay zoom.
+pub const RIVER_WIDTH: f32 = 14.0;
+pub const RIVER_COLOR: (f32, f32, f32) = (0.24, 0.47, 0.66);
 
 // ---------------------------------------------------------------------------
 // Camera (angled orthographic — real 3D, no perspective foreshortening)
 // ---------------------------------------------------------------------------
 
-/// How much closer the camera is pulled than the original framing. The play box
-/// below is divided by this and the whole level (above) multiplied by its
-/// reciprocal, so the fenced field keeps its on-screen size while the characters
-/// — modelled at a fixed size — render this much larger.
+/// How much closer the camera is pulled than the original framing; the play
+/// box below is divided by it, so the characters — modelled at a fixed size —
+/// render this much larger.
 pub const CAM_ZOOM: f32 = 1.5;
 
-/// Ground point the camera looks at (X, Z). Centred on the vertical play area,
-/// plus a fixed -Z (up-screen) nudge: the viewport spans the whole cabinet (the
-/// scene renders behind the top wood strip too), which lifts AutoMin's centre by
-/// half the strip's height — `FRAME_TOP_H_FRAC / 2 * CAM_MIN_WIDTH / cos 45° ≈
-/// 1.9` z-units at any window size. Aiming that much further up-screen drops
-/// the play area back where it was, leaving the extra revealed world tucked
-/// under the strip.
-pub const CAM_TARGET: Vec2 = Vec2::new(0.0, -3.23);
+/// How quickly the camera catches the rider it follows (1/s, exponential).
+/// High enough that a galloping rider never drifts far off-centre, low enough
+/// that a ragdoll's first hard frames don't jerk the view.
+pub const CAM_FOLLOW_RATE: f32 = 6.0;
 /// Camera offset from its target: high up and pulled back along +Z for a ~45°
 /// downward pitch so cubes show their height. Screen-up maps to world -Z. The
 /// magnitude only frames the near/far planes (orthographic size comes from the
-/// play box below), so it rides down with the rest of the shrunk layout.
+/// play box below).
 pub const CAM_OFFSET: Vec3 = Vec3::new(0.0, 26.67, 26.67);
 /// Orthographic play box for `ScalingMode::AutoMin` (portrait-shaped): this
 /// area is always fully visible; wider/taller screens just reveal more ground.
-/// The original 44×64 framing, pulled in by `CAM_ZOOM`. The level literals above
-/// were scaled by the reciprocal by hand — re-zoom here and they must move too.
+/// The original 44×64 framing, pulled in by `CAM_ZOOM`.
 pub const CAM_MIN_WIDTH: f32 = 44.0 / CAM_ZOOM;
 pub const CAM_MIN_HEIGHT: f32 = 64.0 / CAM_ZOOM;
 
@@ -140,6 +120,12 @@ pub const STICK_RADIUS_FRAC: f32 = 0.06;
 
 pub const PLAYER_SPEED: f32 = 19.0;
 pub const PLAYER_ACCEL: f32 = 14.0;
+/// Stick deflection below this reads as centred, so a resting thumb doesn't
+/// creep the horse. Past it the stick only picks a direction: riding is always
+/// stop-or-gallop, exactly like the keyboard, so neither platform has a speed
+/// control the other lacks. Feathering comes from `PLAYER_ACCEL`, the same on
+/// both.
+pub const STICK_DEADZONE: f32 = 0.12;
 /// Collision radius. The horse is ~0.9 wide and ~3.2 long, so this is a
 /// compromise between its shoulders and its nose.
 pub const PLAYER_RADIUS: f32 = 1.1;
@@ -159,7 +145,7 @@ pub const FACE_MIN_SPEED: f32 = 0.2;
 // Cows / boids
 // ---------------------------------------------------------------------------
 
-pub const COW_COUNT: usize = 24;
+pub const COW_COUNT: usize = 120;
 pub const COW_MAX_SPEED: f32 = 11.0;
 pub const COW_RADIUS: f32 = 1.1;
 pub const COW_DRAG: f32 = 1.6;
@@ -176,6 +162,34 @@ pub const W_COHESION: f32 = 5.0;
 pub const W_FLEE: f32 = 55.0;
 pub const W_FENCE: f32 = 45.0;
 pub const W_BOUNDARY: f32 = 32.0;
+
+// Herd drive: the rider's push relayed cow to cow (see `sim::Boid::drive`).
+// A 40-cow herd is ~16 across, wider than `FLEE_RADIUS`, so without relay the
+// rider only ever reaches the near edge.
+
+/// Rider falloff → drive. Above 1 so the inner half of the flee radius drives
+/// fully rather than only a cow under the hooves.
+pub const DRIVE_FROM_RIDER: f32 = 2.0;
+/// Drive kept per neighbour hop. Neighbours are ~3-6 apart, so 0.8 still pushes
+/// at half strength three hops (~15 units) back from the rider.
+pub const DRIVE_RELAY: f32 = 0.8;
+/// How fast drive builds (1/s) — near-instant, so the ripple runs a hop every
+/// few frames.
+pub const DRIVE_RISE: f32 = 12.0;
+/// How fast it fades once the push stops (1/s). Slower than the rise so the
+/// herd carries on a beat after the rider eases off — the herd's momentum.
+pub const DRIVE_FALL: f32 = 2.5;
+/// Full-drive acceleration. Against `COW_DRAG` that settles near a trot of 9,
+/// under the rider's gallop so he can catch up and steer.
+pub const W_DRIVE: f32 = 14.0;
+/// Extra cohesion at full drive (on top of `W_COHESION`).
+pub const W_DRIVE_COHESION: f32 = 10.0;
+
+/// Herd size at which cows run at half `COW_MAX_SPEED`: a 20-herd keeps ~75%,
+/// 60 is down to half, so big herds lumber and stay bunched under the rider.
+pub const HERD_SLOW_SIZE: f32 = 60.0;
+/// Floor on that slowdown, so even the whole range in one herd still moves.
+pub const HERD_MIN_SPEED_FRAC: f32 = 0.4;
 
 // ---------------------------------------------------------------------------
 // Body collisions & ragdolls
@@ -223,8 +237,9 @@ pub const CAMERA_SHAKE_SECS: f32 = 0.32;
 pub const CAMERA_SHAKE_STRENGTH: f32 = 0.34;
 /// How long a player stays down (ragdoll plays out) before respawning.
 pub const DOWNED_SECS: f32 = 2.4;
-/// Where a respawned player reappears (also the startup spawn).
-pub const PLAYER_SPAWN: Vec2 = Vec2::new(0.0, 22.0);
+/// Where the rider starts: just outside the corral's south (screen-bottom)
+/// gate, facing the open range.
+pub const PLAYER_SPAWN: Vec2 = Vec2::new(0.0, CORRAL_HALF + 5.0);
 
 // ---------------------------------------------------------------------------
 // Character models
@@ -272,9 +287,6 @@ pub const SADDLE_JOINT: &str = "saddle";
 /// upright in the horse's space, bouncing with whatever the saddle does.
 pub const SADDLE_FIX: f32 = FRAC_PI_2;
 
-/// glTF nodes making up the cow's hide — everything sharing the `Cow` material.
-/// These get swapped to the penned colour instead of tinting horns and hooves.
-pub const COW_HIDE_NODES: &[&str] = &["cow_body", "cow_head", "cow_ears", "cow_tail"];
 /// The rider's hat, dyed with the player's colour so coop players stay apart.
 pub const RIDER_HAT_NODES: &[&str] = &["cowboy_hat"];
 
@@ -336,24 +348,32 @@ pub const GAIT_STOP_WINDOW: f32 = 0.40;
 pub const RIDER_IDLE_RATE: f32 = 0.45;
 
 // ---------------------------------------------------------------------------
-// Level: a fence across the top of the field with a gap to herd cows through
+// The corral: a square pen at the origin with a gate in the middle of each side,
+// so a herd can be brought home from any direction.
 // ---------------------------------------------------------------------------
 
-// There is no pen box — just a fence line spanning the field near the top (far,
-// -Z), split by a gap at the centre. Driving a cow through the gap captures it;
-// a captured cow then walks off the top and vanishes rather than filling a pen.
-// Kept high so the line sits just below the top frame and barely eats the play
-// area.
-pub const PEN_LINE_Z: f32 = -32.0;
-pub const GATE_HALF: f32 = 3.0; // half-width of the gap
+/// Half the corral's side. 20×20 holds a herd of a few dozen at the boids'
+/// separation spacing (~9 units² a cow) with room to mill.
+pub const CORRAL_HALF: f32 = 10.0;
+pub const GATE_HALF: f32 = 3.0; // half-width of each gap
+/// How far inside the fence line a cow must get before it counts as penned.
+/// Deeper than the penned clamp's inset (`COW_RADIUS` + half a rail), so locking
+/// a cow in never snaps it sideways.
+pub const PEN_COMMIT: f32 = 1.5;
 
-/// Once through the gap, a captured cow marches straight off the top at this
-/// speed (units/s) — a steady amble, not the boid herd's dash — and is hidden
-/// past `PEN_HIDE_Z`, so it leaves the play area for good instead of leaking back.
-pub const PEN_EXIT_SPEED: f32 = 8.0;
-/// World Z at which an escaped cow is fully hidden. Past the top of the view
-/// (which sits around `-FIELD_HALF_Z`) so it disappears off-screen, not on it.
-pub const PEN_HIDE_Z: f32 = -44.0;
+// ---------------------------------------------------------------------------
+// Wild cattle: strays near the corral, big herds out by the river.
+// ---------------------------------------------------------------------------
+
+/// Group size at the corral's edge and out at the bank; lerped by distance.
+pub const WILD_GROUP_MIN: usize = 1;
+pub const WILD_GROUP_MAX: usize = 14;
+/// Nothing starts within this of the corral's corners, so no cow begins penned
+/// or pinned against a rail.
+pub const WILD_SPAWN_CLEARANCE: f32 = 10.0;
+/// A group scatters over a disc of this × √size — about the boids' separation
+/// spacing per cow, so a herd starts loosely bunched rather than overlapping.
+pub const WILD_GROUP_SPREAD: f32 = 2.2;
 
 /// Rail and post cross-section, read straight off the exported model. The sim
 /// widens fence collision by half of this, and grass keeps clear of it.
@@ -404,12 +424,16 @@ pub const GROUND_COLOR: (f32, f32, f32) = (0.34, 0.56, 0.28);
 // tint map multiplied over `GROUND_COLOR`, so that stays the colour knob.
 // ---------------------------------------------------------------------------
 
-/// Texture edge in pixels. With `GROUND_TEX_REPEAT` tiles over the 400-unit
-/// ground plane a texel lands at ~0.05 world units — about one screen pixel at
-/// gameplay zoom, matching the characters' per-vertex foam speckle.
+/// Texture edge in pixels. Spread over one `GROUND_TEX_TILE` a texel lands at
+/// ~0.05 world units — about one screen pixel at gameplay zoom, matching the
+/// characters' per-vertex foam speckle.
 pub const GROUND_TEX_SIZE: usize = 256;
-/// Times the texture repeats across the ground plane (via `uv_transform`).
-pub const GROUND_TEX_REPEAT: f32 = 32.0;
+/// World units covered by one repeat of the ground texture (the original
+/// 400-unit plane carried 32 repeats).
+pub const GROUND_TEX_TILE: f32 = 12.5;
+/// Ground reaches this far past the river's far bank, so the camera never runs
+/// out of world while riding along the edge.
+pub const GROUND_BEYOND_RIVER: f32 = 60.0;
 /// Brightness swing of each octave, around 1.0: coarse grass patchiness, mid
 /// mottle, fine foam grain. Kept low so the field reads as texture, not noise.
 pub const GROUND_PATCH_AMP: f32 = 0.045;
@@ -420,7 +444,6 @@ pub const GROUND_GRAIN_AMP: f32 = 0.06;
 /// the warm multiplier the speckles pull toward.
 pub const GROUND_DIRT_THRESH: f32 = 0.72;
 pub const GROUND_DIRT_TINT: (f32, f32, f32) = (0.92, 0.80, 0.62);
-pub const COW_PENNED_COLOR: (f32, f32, f32) = (0.35, 0.80, 0.40);
 
 /// The bezel's base brown, `#5e4123` — the exact flat fill the frame art is
 /// drawn with, and the same value `blender/gen_wood.py` builds the fence

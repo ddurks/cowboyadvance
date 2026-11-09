@@ -9,8 +9,9 @@
 //! (see `assets/shaders/dust.wgsl`) rather than a textured `StandardMaterial`,
 //! whose vertex-colour path rendered the puffs dark and un-faded on WebGL2.
 //!
-//! The camera never moves, so every billboard shares one constant right/up basis
-//! (derived from `CAM_OFFSET`): no per-particle rotation, just centre ± axes.
+//! The camera only ever translates, never turns, so every billboard shares one
+//! constant right/up basis (derived from `CAM_OFFSET`): no per-particle
+//! rotation, just centre ± axes.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -182,7 +183,7 @@ struct DustField {
     next: usize,      // ring cursor for recycling the oldest slot
     spawn_count: u64, // seeds the deterministic per-puff jitter
     mesh: Handle<Mesh>,
-    right: Vec3, // constant billboard basis (camera never moves)
+    right: Vec3, // constant billboard basis (camera never turns)
     up: Vec3,
     // Scratch buffers, kept the exact mesh length so each frame is an in-place
     // copy — no per-frame allocation.

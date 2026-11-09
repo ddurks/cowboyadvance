@@ -24,8 +24,7 @@ pub fn finish_loading(
     let rigs_bound = animations.iter().count();
     // `parts` non-empty means the scene spawned and the tint found its mesh
     // nodes. `applied` can't gate readiness: it only ever flips true for tints
-    // that are *on* (the rider's hat) — an unpenned cow stays `applied: false`
-    // for the whole session, which would hold the overlay up forever.
+    // that are *on*, so one switched off would hold the overlay up forever.
     let tints_resolved = tints.iter().filter(|tint| !tint.parts.is_empty()).count();
     let tints_total = tints.iter().count();
 

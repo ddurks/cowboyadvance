@@ -1,11 +1,14 @@
-//! Per-frame gameplay systems: player movement, the boid herd, pen scoring, and
-//! the HUD. What the characters *look* like doing it lives in `anim`.
+//! Per-frame gameplay systems: player movement, the boid herd, pen scoring, the
+//! follow camera, and the HUD. What the characters *look* like doing it lives in `anim`.
 
 use bevy::prelude::*;
 
 use crate::components::*;
 use crate::config::*;
-use crate::sim::{boid_acceleration, clamp_field, resolve_body_collisions, resolve_fences, Body};
+use crate::sim::{
+    boid_acceleration, clamp_range, confine_to_corral, herd_max_speed, herd_sizes,
+    resolve_body_collisions, resolve_fences, shape_ride_input, Body, Boid,
+};
 
 /// Target yaw so the entity's local -Z (forward) points along its travel
 /// direction. `None` when too slow to bother turning. `vel` is (X, Z).
@@ -26,13 +29,13 @@ pub fn player_movement(
 ) {
     let dt = time.delta_secs();
     for (player, mut tf, mut vel) in &mut q {
-        let inp = inputs.0.get(player.index).copied().unwrap_or(Vec2::ZERO);
+        let inp = shape_ride_input(inputs.0.get(player.index).copied().unwrap_or(Vec2::ZERO));
         // Input (x = right, y = forward) -> sim (x, z). Forward is -Z.
         let target = Vec2::new(inp.x, -inp.y) * PLAYER_SPEED;
         let mut v = vel.0.lerp(target, (PLAYER_ACCEL * dt).min(1.0));
         let mut pos = Vec2::new(tf.translation.x, tf.translation.z) + v * dt;
         resolve_fences(&mut pos, &mut v, PLAYER_RADIUS, &level.0.fences);
-        clamp_field(&mut pos, PLAYER_RADIUS);
+        clamp_range(&mut pos, PLAYER_RADIUS);
         vel.0 = v;
         tf.translation.x = pos.x;
         tf.translation.z = pos.y;
@@ -48,10 +51,7 @@ pub fn cow_boids(
     time: Res<Time>,
     level: Res<GameLevel>,
     players: Query<(&Transform, Option<&Downed>), (With<Player>, Without<Cow>)>,
-    mut cows: Query<
-        (&mut Transform, &mut Velocity, &mut Cow, &mut ModelTint, &mut Visibility),
-        Without<Player>,
-    >,
+    mut cows: Query<(&mut Transform, &mut Velocity, &mut Cow), Without<Player>>,
 ) {
     let dt = time.delta_secs();
 
@@ -64,42 +64,28 @@ pub fn cow_boids(
         .collect();
 
     // Pass 1: snapshot (ends the immutable borrow before we mutate). The penned
-    // flag rides along so captured cows drop out of everyone's neighbourhood.
-    let snapshot: Vec<(Vec2, Vec2, bool)> = cows
+    // flag rides along so the corral herd and the loose cattle flock apart.
+    let snapshot: Vec<Boid> = cows
         .iter()
-        .map(|(t, v, c, _, _)| (Vec2::new(t.translation.x, t.translation.z), v.0, c.penned))
+        .map(|(t, v, c)| Boid {
+            pos: Vec2::new(t.translation.x, t.translation.z),
+            vel: v.0,
+            penned: c.penned,
+            drive: c.drive,
+        })
         .collect();
+    let herd_size = herd_sizes(&snapshot);
 
     // Pass 2: steer each cow against the snapshot (same iteration order).
-    for (i, (mut tf, mut vel, mut cow, mut tint, mut vis)) in cows.iter_mut().enumerate() {
-        let mut pos = Vec2::new(tf.translation.x, tf.translation.z);
-
-        // Captured: leave the herd behind and march straight off the top of the
-        // field. No fence or boundary handling, so it walks clean through the top
-        // edge and out of view instead of leaking back into the play area.
-        if cow.penned {
-            let mut v = Vec2::new(0.0, -PEN_EXIT_SPEED);
-            if pos.y <= PEN_HIDE_Z {
-                v = Vec2::ZERO; // fully off-screen: stop and disappear for good.
-                *vis = Visibility::Hidden;
-            }
-            pos += v * dt;
-            vel.0 = v;
-            tf.translation.x = pos.x;
-            tf.translation.z = pos.y;
-            if let Some(target) = travel_rotation(v) {
-                tf.rotation = tf.rotation.slerp(target, (TURN_RATE * dt).min(1.0));
-            }
-            continue;
-        }
-
-        let acc = boid_acceleration(i, &snapshot, &player_positions, &level.0);
+    for (i, (mut tf, mut vel, mut cow)) in cows.iter_mut().enumerate() {
+        let (acc, drive) = boid_acceleration(i, &snapshot, &player_positions, &level.0, dt);
+        cow.drive = drive;
         let mut v = vel.0 + acc * dt;
         v *= 1.0 - (COW_DRAG * dt).min(1.0);
-        v = v.clamp_length_max(COW_MAX_SPEED);
-        pos += v * dt;
+        v = v.clamp_length_max(herd_max_speed(herd_size[i]));
+        let mut pos = Vec2::new(tf.translation.x, tf.translation.z) + v * dt;
         resolve_fences(&mut pos, &mut v, COW_RADIUS, &level.0.fences);
-        clamp_field(&mut pos, COW_RADIUS);
+        keep_in_bounds(&mut pos, COW_RADIUS, cow.penned);
         vel.0 = v;
         tf.translation.x = pos.x;
         tf.translation.z = pos.y;
@@ -109,9 +95,16 @@ pub fn cow_boids(
 
         if level.0.penned(pos) {
             cow.penned = true;
-            // `anim::apply_model_tint` repaints the hide green before it exits.
-            tint.on = true;
         }
+    }
+}
+
+/// Penned cows stay in the corral; everything else stays on the range.
+fn keep_in_bounds(pos: &mut Vec2, radius: f32, penned: bool) {
+    if penned {
+        confine_to_corral(pos, radius);
+    } else {
+        clamp_range(pos, radius);
     }
 }
 
@@ -119,8 +112,8 @@ pub fn cow_boids(
 /// run after both movement systems so it resolves the positions they just wrote.
 ///
 /// Impacts harder than the throw thresholds queue a `Throw` for `ragdoll` to
-/// act on. Skipped bodies: penned cows (marching off-field) and downed players
-/// whose horse is gone (nothing is standing there).
+/// act on. Skipped: downed players whose horse is gone (nothing is standing
+/// there).
 #[allow(clippy::type_complexity)]
 pub fn body_collisions(
     level: Res<GameLevel>,
@@ -148,10 +141,7 @@ pub fn body_collisions(
         });
     }
     let player_count = bodies.len();
-    for (tf, vel, cow) in cows.iter() {
-        if cow.penned {
-            continue;
-        }
+    for (tf, vel, _) in cows.iter() {
         bodies.push(Body {
             pos: Vec2::new(tf.translation.x, tf.translation.z),
             vel: vel.0,
@@ -164,10 +154,10 @@ pub fn body_collisions(
 
     // Write back in the same iteration order the snapshot was taken in, keeping
     // resolved bodies out of the fences a shove may have pushed them into.
-    let write = |tf: &mut Transform, vel: &mut Velocity, body: &Body| {
+    let write = |tf: &mut Transform, vel: &mut Velocity, body: &Body, penned: bool| {
         let (mut pos, mut v) = (body.pos, body.vel);
         resolve_fences(&mut pos, &mut v, body.radius, &level.0.fences);
-        clamp_field(&mut pos, body.radius);
+        keep_in_bounds(&mut pos, body.radius, penned);
         tf.translation.x = pos.x;
         tf.translation.z = pos.y;
         vel.0 = v;
@@ -178,16 +168,11 @@ pub fn body_collisions(
         if !alive_player(&downed) {
             continue;
         }
-        write(&mut tf, &mut vel, &bodies[i]);
+        write(&mut tf, &mut vel, &bodies[i], false);
         i += 1;
     }
-    let mut i = player_count;
-    for (mut tf, mut vel, cow) in cows.iter_mut() {
-        if cow.penned {
-            continue;
-        }
-        write(&mut tf, &mut vel, &bodies[i]);
-        i += 1;
+    for (i, (mut tf, mut vel, cow)) in cows.iter_mut().enumerate() {
+        write(&mut tf, &mut vel, &bodies[player_count + i], cow.penned);
     }
 
     for (slot, &(entity, pre_vel, already_downed)) in player_meta.iter().enumerate() {
@@ -201,6 +186,27 @@ pub fn body_collisions(
             horse_too: impacts[slot] >= HORSE_THROW_SPEED,
         });
     }
+}
+
+/// Ease the camera after this device's rider. Writes the un-shaken position;
+/// `ragdoll::camera_shake` adds its jolt on top afterwards.
+pub fn follow_camera(
+    time: Res<Time>,
+    local: Res<LocalPlayer>,
+    players: Query<(&Player, &Transform), Without<GameCamera>>,
+    mut focus: ResMut<CameraFocus>,
+    mut camera: Query<&mut Transform, With<GameCamera>>,
+) {
+    let Some((_, rider)) = players.iter().find(|(p, _)| p.index == local.0) else {
+        return;
+    };
+    let Ok(mut tf) = camera.single_mut() else {
+        return;
+    };
+    let target = Vec2::new(rider.translation.x, rider.translation.z);
+    let catch_up = 1.0 - (-CAM_FOLLOW_RATE * time.delta_secs()).exp();
+    focus.0 = focus.0.lerp(target, catch_up);
+    tf.translation = Vec3::new(focus.0.x, 0.0, focus.0.y) + CAM_OFFSET;
 }
 
 pub fn update_hud(cows: Query<&Cow>, mut text_q: Query<&mut Text, With<PenCounter>>) {

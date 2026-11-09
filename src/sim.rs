@@ -10,58 +10,93 @@ use bevy::math::Vec2;
 use crate::config::*;
 use crate::level::{Fence, Level};
 
-/// Steering acceleration for cow `i`, given a snapshot of all cows (position +
-/// velocity), all player positions, and the level geometry.
+/// One cow as the flocking pass sees it.
+#[derive(Clone, Copy)]
+pub struct Boid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub penned: bool,
+    /// Herding pressure: direction the cow is being pushed, length 0..=1. Set
+    /// by a nearby rider, then relayed cow to cow so pushing the back of a herd
+    /// moves the whole herd instead of crushing its near edge.
+    pub drive: Vec2,
+}
+
+/// Steering acceleration and next `drive` for cow `i`, given a snapshot of all
+/// cows, all player positions, and the level geometry.
 ///
-/// Classic Reynolds boids (separation / alignment / cohesion) plus two
-/// game-specific forces: fleeing players (the herding push) and avoiding
-/// fences + the field edge.
+/// Classic Reynolds boids (separation / alignment / cohesion) plus
+/// game-specific forces: fleeing players (the herding push), the relayed drive,
+/// and avoiding fences + the river bank.
 pub fn boid_acceleration(
     i: usize,
-    cows: &[(Vec2, Vec2, bool)],
+    cows: &[Boid],
     players: &[Vec2],
     level: &Level,
-) -> Vec2 {
-    let (pos, _vel, _penned) = cows[i];
+    dt: f32,
+) -> (Vec2, Vec2) {
+    let me = cows[i];
+    let pos = me.pos;
 
     let mut separation = Vec2::ZERO;
     let mut avg_vel = Vec2::ZERO;
     let mut avg_pos = Vec2::ZERO;
     let mut neighbors = 0.0f32;
+    let mut relay_dir = Vec2::ZERO;
+    let mut relay_max = 0.0f32;
 
-    for (j, &(other_pos, other_vel, other_penned)) in cows.iter().enumerate() {
-        // Captured cows have left the herd — skip them so they stop tugging the
-        // ones still in play toward the exit.
-        if j == i || other_penned {
+    for (j, other) in cows.iter().enumerate() {
+        // Penned and loose cows don't flock together: the penned herd mills in
+        // the corral, and it shouldn't tug loose cows against the fence.
+        if j == i || other.penned != me.penned {
             continue;
         }
-        let d = pos - other_pos;
+        let d = pos - other.pos;
         let dist = d.length();
         if dist < NEIGHBOR_RADIUS && dist > 1e-4 {
-            avg_vel += other_vel;
-            avg_pos += other_pos;
+            avg_vel += other.vel;
+            avg_pos += other.pos;
             neighbors += 1.0;
             if dist < SEPARATION_RADIUS {
                 separation += (d / dist) * (1.0 - dist / SEPARATION_RADIUS);
             }
+            // Strength from the most-pushed neighbour, heading from the blend of
+            // all of them, so a herd pushed from one flank still moves as one.
+            relay_dir += other.drive;
+            relay_max = relay_max.max(other.drive.length());
         }
     }
 
-    let mut acc = separation * W_SEPARATION;
-
-    if neighbors > 0.0 {
-        acc += (avg_vel / neighbors).normalize_or_zero() * W_ALIGNMENT;
-        let center = avg_pos / neighbors;
-        acc += (center - pos).normalize_or_zero() * W_COHESION;
-    }
-
     // Flee from players — this is what lets the cowboy steer the herd.
+    let mut flee = Vec2::ZERO;
+    let mut pushed = Vec2::ZERO;
     for &pp in players {
         let d = pos - pp;
         let dist = d.length();
         if dist < FLEE_RADIUS && dist > 1e-4 {
-            acc += (d / dist) * (1.0 - dist / FLEE_RADIUS) * W_FLEE;
+            let falloff = 1.0 - dist / FLEE_RADIUS;
+            flee += (d / dist) * falloff * W_FLEE;
+            pushed += (d / dist) * (falloff * DRIVE_FROM_RIDER).min(1.0);
         }
+    }
+    let relayed = relay_dir.normalize_or_zero() * relay_max * DRIVE_RELAY;
+    let target = if pushed.length() >= relayed.length() {
+        pushed.clamp_length_max(1.0)
+    } else {
+        relayed
+    };
+    let rate = if target.length() > me.drive.length() { DRIVE_RISE } else { DRIVE_FALL };
+    let drive = me.drive.lerp(target, 1.0 - (-rate * dt).exp());
+    let pressure = drive.length();
+
+    let mut acc = separation * W_SEPARATION + flee + drive * W_DRIVE;
+
+    if neighbors > 0.0 {
+        acc += (avg_vel / neighbors).normalize_or_zero() * W_ALIGNMENT;
+        // Pressed cattle bunch up: the harder the push, the tighter the herd
+        // holds, so a big herd doesn't spill around the rider's flanks.
+        let center = avg_pos / neighbors;
+        acc += (center - pos).normalize_or_zero() * (W_COHESION + pressure * W_DRIVE_COHESION);
     }
 
     // Steer away from fences before hitting them.
@@ -74,25 +109,53 @@ pub fn boid_acceleration(
         }
     }
 
-    acc + boundary_force(pos)
+    (acc + boundary_force(pos), drive)
 }
 
-/// Soft inward push when a position strays near the field edge.
+/// Size of the herd each cow belongs to: cows chained together by
+/// `NEIGHBOR_RADIUS` (same penned side) count as one herd.
+pub fn herd_sizes(cows: &[Boid]) -> Vec<usize> {
+    let mut parent: Vec<usize> = (0..cows.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..cows.len() {
+        for j in i + 1..cows.len() {
+            if cows[i].penned == cows[j].penned
+                && cows[i].pos.distance_squared(cows[j].pos) < NEIGHBOR_RADIUS * NEIGHBOR_RADIUS
+            {
+                let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                parent[a] = b;
+            }
+        }
+    }
+    let roots: Vec<usize> = (0..cows.len()).map(|i| root(&mut parent, i)).collect();
+    let mut count = vec![0; cows.len()];
+    for &r in &roots {
+        count[r] += 1;
+    }
+    roots.iter().map(|&r| count[r]).collect()
+}
+
+/// Top speed for a cow in a herd of `size`: big herds lumber, which keeps them
+/// together under the rider and is the herd's weight in the spec.
+pub fn herd_max_speed(size: usize) -> f32 {
+    let scale = 1.0 / (1.0 + (size.max(1) - 1) as f32 / HERD_SLOW_SIZE);
+    COW_MAX_SPEED * scale.max(HERD_MIN_SPEED_FRAC)
+}
+
+/// Soft inward push when a position strays near the river bank.
 pub fn boundary_force(pos: Vec2) -> Vec2 {
-    let m = BOUNDARY_MARGIN;
-    let mut f = Vec2::ZERO;
-    if pos.x > FIELD_HALF_X - m {
-        f.x -= (pos.x - (FIELD_HALF_X - m)) / m;
+    let edge = RANGE_RADIUS - BOUNDARY_MARGIN;
+    let r = pos.length();
+    if r <= edge {
+        return Vec2::ZERO;
     }
-    if pos.x < -FIELD_HALF_X + m {
-        f.x += ((-FIELD_HALF_X + m) - pos.x) / m;
-    }
-    // Only the near (+Z) edge pushes back. The far (-Z) edge is the pen line the
-    // cows are meant to cross, so there is deliberately no push there.
-    if pos.y > FIELD_Z_NEAR - m {
-        f.y -= (pos.y - (FIELD_Z_NEAR - m)) / m;
-    }
-    f * W_BOUNDARY
+    -pos / r * ((r - edge) / BOUNDARY_MARGIN) * W_BOUNDARY
 }
 
 /// Push a circle of `radius` out of any fence it overlaps and kill the velocity
@@ -118,9 +181,29 @@ pub fn resolve_fences(pos: &mut Vec2, vel: &mut Vec2, radius: f32, fences: &[Fen
     }
 }
 
-pub fn clamp_field(pos: &mut Vec2, radius: f32) {
-    pos.x = pos.x.clamp(-FIELD_HALF_X + radius, FIELD_HALF_X - radius);
-    pos.y = pos.y.clamp(-FIELD_HALF_Z + radius, FIELD_Z_NEAR - radius);
+/// Keep a circle of `radius` on the near side of the river.
+pub fn clamp_range(pos: &mut Vec2, radius: f32) {
+    let max = RANGE_RADIUS - radius;
+    if pos.length_squared() > max * max {
+        *pos = pos.normalize() * max;
+    }
+}
+
+/// Keep a penned cow inside the corral — gates included, so the herd you
+/// brought home stays home.
+pub fn confine_to_corral(pos: &mut Vec2, radius: f32) {
+    let inside = CORRAL_HALF - radius - FENCE_THICK * 0.5;
+    pos.x = pos.x.clamp(-inside, inside);
+    pos.y = pos.y.clamp(-inside, inside);
+}
+
+/// Turn a raw stick vector into a riding intent: still inside the deadzone,
+/// otherwise a full gallop in the stick's direction (see `STICK_DEADZONE`).
+pub fn shape_ride_input(stick: Vec2) -> Vec2 {
+    if stick.length() <= STICK_DEADZONE {
+        return Vec2::ZERO;
+    }
+    stick.normalize()
 }
 
 /// A colliding mover on the ground plane (cow, or horse + rider).
@@ -180,6 +263,50 @@ mod tests {
 
     fn body(pos: Vec2, vel: Vec2, mass: f32) -> Body {
         Body { pos, vel, radius: 1.0, mass }
+    }
+
+    #[test]
+    fn stick_is_stop_or_gallop_like_the_keyboard() {
+        assert_eq!(shape_ride_input(Vec2::new(STICK_DEADZONE * 0.5, 0.0)), Vec2::ZERO);
+        assert_eq!(shape_ride_input(Vec2::new(0.0, 0.3)), Vec2::Y);
+        assert_eq!(shape_ride_input(Vec2::new(-1.0, 0.0)), Vec2::NEG_X);
+        let keyboard_diagonal = Vec2::new(1.0, 1.0).normalize();
+        assert!(shape_ride_input(keyboard_diagonal).abs_diff_eq(keyboard_diagonal, 1e-6));
+    }
+
+    #[test]
+    fn drive_relays_through_the_herd_and_fades() {
+        let level = Level { fences: Vec::new(), posts: Vec::new() };
+        let cow = |x: f32, drive: Vec2| Boid { pos: Vec2::new(x, 0.0), vel: Vec2::ZERO, penned: false, drive };
+        let mut herd = vec![cow(0.0, Vec2::X), cow(4.0, Vec2::ZERO)];
+        for _ in 0..60 {
+            herd[1].drive = boid_acceleration(1, &herd, &[], &level, 1.0 / 60.0).1;
+        }
+        assert!(herd[1].drive.x > DRIVE_RELAY * 0.9, "far cow picks up its neighbour's push");
+        assert!(herd[1].drive.y.abs() < 1e-4);
+
+        herd[0].drive = Vec2::ZERO;
+        let faded = boid_acceleration(1, &herd, &[], &level, 1.0).1;
+        assert!(faded.length() < herd[1].drive.length(), "drive fades once the push stops");
+    }
+
+    #[test]
+    fn bigger_herds_are_slower() {
+        let cow = |x: f32| Boid { pos: Vec2::new(x, 0.0), vel: Vec2::ZERO, penned: false, drive: Vec2::ZERO };
+        let cows = [cow(0.0), cow(4.0), cow(8.0), cow(50.0)];
+        assert_eq!(herd_sizes(&cows), vec![3, 3, 3, 1]);
+        assert_eq!(herd_max_speed(1), COW_MAX_SPEED);
+        assert!(herd_max_speed(30) < herd_max_speed(10));
+        assert_eq!(herd_max_speed(10_000), COW_MAX_SPEED * HERD_MIN_SPEED_FRAC);
+    }
+
+    #[test]
+    fn range_clamp_and_push_point_inward() {
+        let mut p = Vec2::new(RANGE_RADIUS + 5.0, 0.0);
+        clamp_range(&mut p, 1.0);
+        assert!((p.length() - (RANGE_RADIUS - 1.0)).abs() < 1e-3);
+        assert!(boundary_force(Vec2::new(0.0, -(RANGE_RADIUS - 1.0))).y > 0.0);
+        assert_eq!(boundary_force(Vec2::new(10.0, 10.0)), Vec2::ZERO);
     }
 
     #[test]

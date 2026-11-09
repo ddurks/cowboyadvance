@@ -40,6 +40,8 @@ mod hide;
 mod level;
 #[path = "../src/noise.rs"]
 mod noise;
+#[path = "../src/range.rs"]
+mod range;
 #[path = "../src/setup.rs"]
 mod setup;
 #[path = "../src/sim.rs"]
@@ -408,12 +410,6 @@ fn build_scene(
 
     // The models themselves hang off these roots once `anim::finish_models`
     // sees the .glbs parsed.
-    let penned_mat = materials.add(StandardMaterial {
-        base_color: srgb3(COW_PENNED_COLOR),
-        perceptual_roughness: 0.8,
-        ..default()
-    });
-
     for i in 0..HERD {
         let s = (i as f32 + hash01(i as u64 * 3 + 1) * 0.7) / HERD as f32;
         let mid = herd_point(s);
@@ -441,9 +437,8 @@ fn build_scene(
         commands.spawn((
             Transform::from_translation(ground(pos)).with_rotation(face(dir)),
             Visibility::default(),
-            Cow { penned: false },
+            Cow { penned: false, drive: Vec2::ZERO },
             Velocity(dir * speed),
-            ModelTint::new(COW_HIDE_NODES, penned_mat.clone(), false),
         ));
     }
 
@@ -479,13 +474,9 @@ fn build_scene(
 // few hundred units away.
 // ---------------------------------------------------------------------------
 
-/// Footprint of one grass tile. Mirrors `grass.rs`, which grows the field plus
-/// `GRASS_MARGIN` on every side — if that margin changes, change it here.
-const GRASS_MARGIN: f32 = 16.0;
-const GRASS_TILE: Vec2 = Vec2::new(
-    FIELD_HALF_X * 2.0 + GRASS_MARGIN * 2.0,
-    FIELD_Z_NEAR + FIELD_HALF_Z + GRASS_MARGIN * 2.0,
-);
+/// Footprint of one grass tile: the block `grass.rs` grows around the origin
+/// at startup.
+const GRASS_TILE: Vec2 = grass::GRASS_BLOCK;
 /// Tiles either side, and beyond. This has to reach much further than it looks
 /// like it should: a flat plain past ~500 units occupies less than a degree
 /// below the horizon, so the strip of *bare* ground between the last grass and

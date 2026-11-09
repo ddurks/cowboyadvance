@@ -28,13 +28,11 @@ pub struct Ragdoll {
     angvel: Vec3,
 }
 
-/// State for a short camera-space impact jolt. `offset` is removed before the
-/// next sample so the shake never drifts the otherwise fixed camera.
+/// State for a short camera-space impact jolt.
 #[derive(Resource, Default)]
 pub struct CameraShake {
     elapsed: f32,
     remaining: f32,
-    offset: Vec3,
 }
 
 impl CameraShake {
@@ -129,6 +127,9 @@ pub fn throw_players(
 
 /// Shake in the camera's own X/Y plane so the effect reads consistently at
 /// every window shape. Two mismatched frequencies avoid a mechanical wobble.
+///
+/// Runs after `systems::follow_camera`, which rewrites the camera's un-shaken
+/// position every frame — so the jolt is simply added and never drifts.
 pub fn camera_shake(
     time: Res<Time>,
     mut shake: ResMut<CameraShake>,
@@ -138,9 +139,6 @@ pub fn camera_shake(
         return;
     };
 
-    // Undo exactly what the previous frame added before sampling a new offset.
-    tf.translation -= shake.offset;
-    shake.offset = Vec3::ZERO;
     if shake.remaining <= 0.0 {
         return;
     }
@@ -152,8 +150,8 @@ pub fn camera_shake(
     let x = (shake.elapsed * 71.0).sin();
     let y = (shake.elapsed * 53.0 + 1.7).sin();
     let local = Vec3::new(x, y * 0.72, 0.0) * CAMERA_SHAKE_STRENGTH * decay;
-    shake.offset = tf.rotation * local;
-    tf.translation += shake.offset;
+    let jolt = tf.rotation * local;
+    tf.translation += jolt;
 }
 
 pub fn ragdoll_motion(time: Res<Time>, mut q: Query<(&mut Transform, &mut Ragdoll)>) {
@@ -213,7 +211,9 @@ pub fn respawn_players(
             }
         }
 
-        tf.translation = Vec3::new(PLAYER_SPAWN.x, 0.0, PLAYER_SPAWN.y);
+        // Back up where he fell: out on the open range, a trip back to the
+        // corral would be a punishment far bigger than the fall.
+        tf.translation.y = 0.0;
         tf.rotation = Quat::IDENTITY;
         vel.0 = Vec2::ZERO;
 

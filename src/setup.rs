@@ -1,5 +1,5 @@
-//! Scene construction: camera, lighting, ground, pen, the herd, the mounted
-//! player, and the 2D HUD / joystick overlay. Runs once at `Startup`.
+//! Scene construction: camera, lighting, ground, river, corral, the herd, the
+//! mounted player, and the 2D HUD / joystick overlay. Runs once at `Startup`.
 //!
 //! The characters are only *requested* here — glTF scenes load asynchronously,
 //! so `anim` finishes assembling them (rider onto saddle, clips onto players)
@@ -13,6 +13,7 @@ use bevy::light::CascadeShadowConfigBuilder;
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use std::f32::consts::FRAC_PI_2;
 
 use crate::anim::{Animated, MountRider, Rig};
 use crate::components::*;
@@ -153,7 +154,7 @@ pub fn setup(
         },
     ));
 
-    let cam_target = world(CAM_TARGET, 0.0);
+    let cam_target = world(PLAYER_SPAWN, 0.0);
     commands.spawn((
         Camera3d::default(),
         msaa,
@@ -214,38 +215,58 @@ pub fn setup(
     // (Clear colors are set per-camera above: sky for the game, room for the UI.)
 
     // --- Ground ----------------------------------------------------------
-    // Oversized so AutoMin's "extra" space fills with grass (not sky) on any
-    // aspect ratio. The play area is bounded separately by FIELD_HALF_*.
+    // One plane under the whole range, the river and a strip of far bank, so
+    // the follow camera never sees past the world even riding the edge.
+    let ground_size = (RANGE_RADIUS + RIVER_WIDTH + GROUND_BEYOND_RIVER) * 2.0;
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(400.0, 400.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(ground_size, ground_size))),
         MeshMaterial3d(materials.add(StandardMaterial {
             // The colour lives in the baked texture (from GROUND_COLOR).
             base_color_texture: Some(ground_image(&mut images)),
-            uv_transform: Affine2::from_scale(Vec2::splat(GROUND_TEX_REPEAT)),
+            uv_transform: Affine2::from_scale(Vec2::splat(ground_size / GROUND_TEX_TILE)),
             perceptual_roughness: crate::foam::FOAM_ROUGHNESS,
             reflectance: crate::foam::FOAM_REFLECTANCE,
             ..default()
         })),
     ));
 
-    // Goal-zone tint: a short chute straddling the gap, so the target the cows
-    // have to be driven through reads at a glance without a whole pen floor to
-    // paint. Its width matches the opening; it runs a little either side of the
-    // line, into the strip where captured cows walk off.
-    let chute = Vec2::new(GATE_HALF * 2.0, 5.33);
+    // The river ringing the range: drawn only — `sim::clamp_range` holds
+    // everyone to the near bank.
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(chute.x, chute.y))),
+        Mesh3d(meshes.add(
+            Annulus::new(RANGE_RADIUS, RANGE_RADIUS + RIVER_WIDTH).mesh().resolution(256),
+        )),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(PEN_TINT_COLOR.0, PEN_TINT_COLOR.1, PEN_TINT_COLOR.2, 0.5),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
+            base_color: srgb3(RIVER_COLOR),
+            perceptual_roughness: 0.35,
             ..default()
         })),
-        Transform::from_translation(world(Vec2::new(0.0, PEN_LINE_Z), 0.02)),
+        // The annulus is built in the XY plane facing +Z; lay it flat, a hair
+        // above the ground so the two never z-fight.
+        Transform::from_translation(Vec3::Y * 0.02)
+            .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
     ));
 
+    // Goal-zone tint: a short chute straddling each gate, so the openings the
+    // cows have to be driven through read at a glance.
+    let chute_mesh = meshes.add(Plane3d::default().mesh().size(GATE_HALF * 2.0, 5.33));
+    let chute_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(PEN_TINT_COLOR.0, PEN_TINT_COLOR.1, PEN_TINT_COLOR.2, 0.5),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    for gate in [Vec2::Y, Vec2::NEG_Y, Vec2::X, Vec2::NEG_X] {
+        commands.spawn((
+            Mesh3d(chute_mesh.clone()),
+            MeshMaterial3d(chute_mat.clone()),
+            Transform::from_translation(world(gate * CORRAL_HALF, 0.02))
+                .with_rotation(Quat::from_rotation_y(if gate.x != 0.0 { FRAC_PI_2 } else { 0.0 })),
+        ));
+    }
+
     // --- Fences ----------------------------------------------------------
-    // The pen, plus the field edge, built from the modelled post and rail once
+    // The corral, built from the modelled post and rail once
     // its .glb parses (`fence::spawn_fences_when_ready`).
     commands.insert_resource(crate::fence::PendingFences(asset_server.load(FENCE_MODEL)));
 
@@ -256,29 +277,18 @@ pub fn setup(
     // rigs are rooted at the feet. The models themselves arrive later:
     // `anim::finish_models` hangs them off these roots once the .glbs parse.
 
-    // Swapped-in tints share the foam response so a penned cow or a dyed hat
-    // doesn't suddenly turn glossy.
-    let cow_penned_mat = materials.add(StandardMaterial {
-        base_color: srgb3(COW_PENNED_COLOR),
-        perceptual_roughness: crate::foam::FOAM_ROUGHNESS,
-        reflectance: crate::foam::FOAM_REFLECTANCE,
-        ..default()
-    });
-    for i in 0..COW_COUNT {
-        // Herd starts clustered near the bottom of the field (+Z).
-        let x = -9.33 + hash01(i as u64 * 2 + 1) * 18.67;
-        let z = 10.67 + hash01(i as u64 * 2 + 2) * 12.0;
+    for pos in crate::range::wild_cow_spawns() {
         commands.spawn((
-            Transform::from_translation(world(Vec2::new(x, z), 0.0)),
+            Transform::from_translation(world(pos, 0.0)),
             Visibility::default(),
-            Cow { penned: false },
+            Cow { penned: false, drive: Vec2::ZERO },
             Velocity(Vec2::ZERO),
-            ModelTint::new(COW_HIDE_NODES, cow_penned_mat.clone(), false),
         ));
     }
 
     // The player is a horse; the rider is parented to its saddle joint once the
     // horse's scene exists (see `anim::mount_rider`).
+    // The dyed hat shares the foam response so it doesn't turn glossy.
     let hat_mat = materials.add(StandardMaterial {
         base_color: srgb3(player_color(0)),
         perceptual_roughness: crate::foam::FOAM_ROUGHNESS,
@@ -296,6 +306,8 @@ pub fn setup(
     // --- Resources -------------------------------------------------------
     commands.insert_resource(GameLevel(level));
     commands.insert_resource(PlayerInputs(vec![Vec2::ZERO])); // one local player
+    commands.init_resource::<LocalPlayer>();
+    commands.insert_resource(CameraFocus(PLAYER_SPAWN));
 
     commands.init_resource::<JoystickState>();
 }

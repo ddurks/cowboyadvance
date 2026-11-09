@@ -14,10 +14,12 @@ pub struct Player {
     pub index: usize,
 }
 
-/// A cow. `penned` is cached so we only swap its material when it changes.
+/// A cow. `penned` once it has been driven into the corral, where it stays.
 #[derive(Component)]
 pub struct Cow {
     pub penned: bool,
+    /// Herding pressure carried frame to frame; see `sim::Boid::drive`.
+    pub drive: Vec2,
 }
 
 /// 2D velocity on the X/Z ground plane.
@@ -92,17 +94,26 @@ pub struct ModelScenes {
     pub _roots: [Handle<Gltf>; 3],
 }
 
+/// Which player slot this device controls — the one the camera follows. Other
+/// slots are other riders (bots now, remote players later), never "not player 0".
+#[derive(Resource, Default)]
+pub struct LocalPlayer(pub usize);
+
+/// Ground point (X, Z) the game camera is centred on; it trails the local
+/// rider. Grass streams and the trample map scrolls around it.
+#[derive(Resource)]
+pub struct CameraFocus(pub Vec2);
+
 /// Marks the 3D game camera, whose window viewport is resized each frame to the
 /// cabinet's scene rect.
 #[derive(Component)]
 pub struct GameCamera;
 
-/// A runtime material override for part of a spawned glTF model: the cow's hide
-/// turning green once it is penned, and the rider's hat carrying the player's
-/// colour.
+/// A runtime material override for part of a spawned glTF model: the rider's
+/// hat carrying the player's colour.
 ///
 /// glTF materials are shared by every instance of a model, so recolouring one
-/// cow means swapping the handle on that cow's own mesh entities. Those live
+/// rider means swapping the handle on that cow's own mesh entities. Those live
 /// inside the scene the asset server spawns a few frames later, so the parts are
 /// resolved lazily, by glTF node name, and cached here.
 #[derive(Component)]

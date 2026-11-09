@@ -23,6 +23,7 @@ mod level;
 mod loading;
 mod noise;
 mod ragdoll;
+mod range;
 mod setup;
 mod sim;
 mod systems;
@@ -82,6 +83,7 @@ fn main() {
                 // the horse) into a ballistic tumble.
                 systems::body_collisions,
                 ragdoll::throw_players,
+                systems::follow_camera,
                 ragdoll::camera_shake,
                 ragdoll::ragdoll_motion,
                 ragdoll::respawn_players,

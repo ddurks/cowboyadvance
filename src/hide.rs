@@ -17,8 +17,7 @@
 //!
 //! Vertex colours sidestep both. The splotch is baked per vertex from the rest
 //! position, so it skins along with the mesh for free, `StandardMaterial`
-//! already multiplies vertex colour into base colour, and it composes with the
-//! penned-green tint: a penned cow keeps its patches, in green.
+//! already multiplies vertex colour into base colour.
 //!
 //! The usual objection to vertex colours is blockiness, and it does not apply
 //! here. `cow_body` is 1664 triangles on something ~50 px tall on screen, so
