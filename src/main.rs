@@ -68,6 +68,8 @@ fn main() {
         ))
         .init_resource::<cabinet::CabinetLayout>()
         .init_resource::<components::PendingThrows>()
+        .init_resource::<components::Runs>()
+        .init_resource::<components::BrandMaterials>()
         .init_resource::<ragdoll::CameraShake>()
         .add_systems(Startup, (anim::load_models, setup::setup).chain())
         .add_systems(
@@ -76,12 +78,17 @@ fn main() {
                 cabinet::compute_cabinet_layout,
                 cabinet::update_game_viewport,
                 input::gather_input,
-                systems::player_movement,
-                systems::cow_boids,
-                // Hard contacts after both movers have written their positions;
-                // a hit over the throw threshold ejects the rider (and maybe
-                // the horse) into a ballistic tumble.
-                systems::body_collisions,
+                // Nested only to stay under Bevy's 20-system tuple limit.
+                (
+                    systems::player_movement,
+                    systems::cow_boids,
+                    // Hard contacts after both movers have written their
+                    // positions; a hit over the throw threshold ejects the rider
+                    // (and maybe the horse) into a ballistic tumble.
+                    systems::body_collisions,
+                    systems::cash_out,
+                )
+                    .chain(),
                 ragdoll::throw_players,
                 systems::follow_camera,
                 ragdoll::camera_shake,
@@ -99,6 +106,7 @@ fn main() {
                 loading::finish_loading,
                 // Gaits read the velocities the movement systems just wrote.
                 anim::drive_gaits,
+                systems::show_herd_brands,
                 systems::update_hud,
                 cabinet::apply_cabinet_layout,
             )

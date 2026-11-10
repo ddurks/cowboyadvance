@@ -16,10 +16,22 @@ pub struct Boid {
     pub pos: Vec2,
     pub vel: Vec2,
     pub penned: bool,
+    /// Rider index whose herd this is; `None` for wild cattle.
+    pub owner: Option<usize>,
     /// Herding pressure: direction the cow is being pushed, length 0..=1. Set
     /// by a nearby rider, then relayed cow to cow so pushing the back of a herd
     /// moves the whole herd instead of crushing its near edge.
     pub drive: Vec2,
+}
+
+impl Boid {
+    /// Whether two cows flock as one herd. Penned and loose cows never do: the
+    /// penned herd mills in the corral and shouldn't tug loose cows against
+    /// the fence. Out on the range each rider's herd, and the wild cattle, keep
+    /// to themselves so herds stay distinct when they brush past each other.
+    fn same_flock(&self, other: &Boid) -> bool {
+        self.penned == other.penned && (self.penned || self.owner == other.owner)
+    }
 }
 
 /// Steering acceleration and next `drive` for cow `i`, given a snapshot of all
@@ -46,20 +58,19 @@ pub fn boid_acceleration(
     let mut relay_max = 0.0f32;
 
     for (j, other) in cows.iter().enumerate() {
-        // Penned and loose cows don't flock together: the penned herd mills in
-        // the corral, and it shouldn't tug loose cows against the fence.
         if j == i || other.penned != me.penned {
             continue;
         }
         let d = pos - other.pos;
         let dist = d.length();
-        if dist < NEIGHBOR_RADIUS && dist > 1e-4 {
+        // Every cow keeps its distance, whoever's herd it is in.
+        if dist < SEPARATION_RADIUS && dist > 1e-4 {
+            separation += (d / dist) * (1.0 - dist / SEPARATION_RADIUS);
+        }
+        if dist < NEIGHBOR_RADIUS && dist > 1e-4 && me.same_flock(other) {
             avg_vel += other.vel;
             avg_pos += other.pos;
             neighbors += 1.0;
-            if dist < SEPARATION_RADIUS {
-                separation += (d / dist) * (1.0 - dist / SEPARATION_RADIUS);
-            }
             // Strength from the most-pushed neighbour, heading from the blend of
             // all of them, so a herd pushed from one flank still moves as one.
             relay_dir += other.drive;
@@ -112,8 +123,8 @@ pub fn boid_acceleration(
     (acc + boundary_force(pos), drive)
 }
 
-/// Size of the herd each cow belongs to: cows chained together by
-/// `NEIGHBOR_RADIUS` (same penned side) count as one herd.
+/// Size of the herd each cow belongs to: cows of one flock chained together
+/// by `NEIGHBOR_RADIUS` count as one herd.
 pub fn herd_sizes(cows: &[Boid]) -> Vec<usize> {
     let mut parent: Vec<usize> = (0..cows.len()).collect();
     fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -125,7 +136,7 @@ pub fn herd_sizes(cows: &[Boid]) -> Vec<usize> {
     }
     for i in 0..cows.len() {
         for j in i + 1..cows.len() {
-            if cows[i].penned == cows[j].penned
+            if cows[i].same_flock(&cows[j])
                 && cows[i].pos.distance_squared(cows[j].pos) < NEIGHBOR_RADIUS * NEIGHBOR_RADIUS
             {
                 let (a, b) = (root(&mut parent, i), root(&mut parent, j));
@@ -139,6 +150,33 @@ pub fn herd_sizes(cows: &[Boid]) -> Vec<usize> {
         count[r] += 1;
     }
     roots.iter().map(|&r| count[r]).collect()
+}
+
+/// Owner of each cow after this frame's claims. A loose wild cow joins the
+/// herd of a rider within `JOIN_RADIUS_RIDER`, or of a loose cow already in
+/// that rider's herd within `JOIN_RADIUS_HERD`; the nearest claim wins. Claims
+/// read the snapshot, so a touched wild group joins a cow-hop per frame.
+/// `riders` is (player index, position) for riders able to claim.
+pub fn claim_owners(cows: &[Boid], riders: &[(usize, Vec2)]) -> Vec<Option<usize>> {
+    cows.iter()
+        .map(|me| {
+            if me.penned || me.owner.is_some() {
+                return me.owner;
+            }
+            let by_rider = riders
+                .iter()
+                .map(|&(index, p)| (index, p.distance(me.pos), JOIN_RADIUS_RIDER));
+            let by_herd = cows
+                .iter()
+                .filter(|c| !c.penned)
+                .filter_map(|c| Some((c.owner?, c.pos.distance(me.pos), JOIN_RADIUS_HERD)));
+            by_rider
+                .chain(by_herd)
+                .filter(|&(_, dist, reach)| dist < reach)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(index, _, _)| index)
+        })
+        .collect()
 }
 
 /// Top speed for a cow in a herd of `size`: big herds lumber, which keeps them
@@ -277,7 +315,7 @@ mod tests {
     #[test]
     fn drive_relays_through_the_herd_and_fades() {
         let level = Level { fences: Vec::new(), posts: Vec::new() };
-        let cow = |x: f32, drive: Vec2| Boid { pos: Vec2::new(x, 0.0), vel: Vec2::ZERO, penned: false, drive };
+        let cow = |x: f32, drive: Vec2| Boid { pos: Vec2::new(x, 0.0), vel: Vec2::ZERO, penned: false, owner: None, drive };
         let mut herd = vec![cow(0.0, Vec2::X), cow(4.0, Vec2::ZERO)];
         for _ in 0..60 {
             herd[1].drive = boid_acceleration(1, &herd, &[], &level, 1.0 / 60.0).1;
@@ -292,12 +330,31 @@ mod tests {
 
     #[test]
     fn bigger_herds_are_slower() {
-        let cow = |x: f32| Boid { pos: Vec2::new(x, 0.0), vel: Vec2::ZERO, penned: false, drive: Vec2::ZERO };
+        let cow = |x: f32| Boid { pos: Vec2::new(x, 0.0), vel: Vec2::ZERO, penned: false, owner: None, drive: Vec2::ZERO };
         let cows = [cow(0.0), cow(4.0), cow(8.0), cow(50.0)];
         assert_eq!(herd_sizes(&cows), vec![3, 3, 3, 1]);
         assert_eq!(herd_max_speed(1), COW_MAX_SPEED);
         assert!(herd_max_speed(30) < herd_max_speed(10));
         assert_eq!(herd_max_speed(10_000), COW_MAX_SPEED * HERD_MIN_SPEED_FRAC);
+    }
+
+    #[test]
+    fn wild_cows_join_by_touch_and_chain_through_the_herd() {
+        let cow = |x: f32, owner: Option<usize>| Boid {
+            pos: Vec2::new(x, 0.0),
+            vel: Vec2::ZERO,
+            penned: false,
+            owner,
+            drive: Vec2::ZERO,
+        };
+        let mut cows = vec![cow(2.0, None), cow(4.5, None), cow(30.0, None), cow(33.0, Some(1))];
+        let riders = [(0, Vec2::ZERO), (1, Vec2::new(40.0, 0.0))];
+        let owners = claim_owners(&cows, &riders);
+        assert_eq!(owners, vec![Some(0), None, Some(1), Some(1)], "rider and herd touches claim");
+        for (c, o) in cows.iter_mut().zip(owners) {
+            c.owner = o;
+        }
+        assert_eq!(claim_owners(&cows, &riders)[1], Some(0), "next frame the chain reaches on");
     }
 
     #[test]

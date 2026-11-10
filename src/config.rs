@@ -185,6 +185,22 @@ pub const W_DRIVE: f32 = 14.0;
 /// Extra cohesion at full drive (on top of `W_COHESION`).
 pub const W_DRIVE_COHESION: f32 = 10.0;
 
+/// A wild cow joins a rider's herd when the rider comes this close — about
+/// horse-and-cow touching, inside `FLEE_RADIUS` so a galloping rider has to
+/// actually reach it.
+pub const JOIN_RADIUS_RIDER: f32 = 4.5;
+/// ...or when it comes this close to a cow already in that herd: just past
+/// `SEPARATION_RADIUS`, the spacing of a herd at rest, so touching groups merge.
+pub const JOIN_RADIUS_HERD: f32 = 3.5;
+
+/// Dot on an owned cow's rump in its rider's colour. Measured off cow.glb: the
+/// body box tops out at y ≈ 1.57 and its rear face sits 0.76 behind centre
+/// (+Z once `MODEL_YAW` turns the model to face −Z). Set on top of the rump so
+/// the tilted camera sees it from every heading; a flattened sphere sunk to
+/// just proud of the hide so the gait's bob doesn't lift it clear.
+pub const BRAND_OFFSET: Vec3 = Vec3::new(0.0, 1.55, 0.45);
+pub const BRAND_SIZE: Vec3 = Vec3::new(0.30, 0.10, 0.30);
+
 /// Herd size at which cows run at half `COW_MAX_SPEED`: a 20-herd keeps ~75%,
 /// 60 is down to half, so big herds lumber and stay bunched under the rider.
 pub const HERD_SLOW_SIZE: f32 = 60.0;
@@ -374,6 +390,13 @@ pub const WILD_SPAWN_CLEARANCE: f32 = 10.0;
 /// A group scatters over a disc of this × √size — about the boids' separation
 /// spacing per cow, so a herd starts loosely bunched rather than overlapping.
 pub const WILD_GROUP_SPREAD: f32 = 2.2;
+/// Banked cows respawn at least this far from every rider, so nothing pops in
+/// on screen: the view reaches ~30 up-screen on the tilted ground
+/// (`CAM_MIN_HEIGHT` / 2 · √2), ~60 once the planned 2× pull-back lands.
+pub const REPLACE_CLEARANCE: f32 = 64.0;
+pub const REPLACE_TRIES: u64 = 16;
+/// How long the cash-out result shows in the HUD.
+pub const CASH_OUT_BANNER_SECS: f32 = 3.0;
 
 /// Rail and post cross-section, read straight off the exported model. The sim
 /// widens fence collision by half of this, and grass keeps clear of it.

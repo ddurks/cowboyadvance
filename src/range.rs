@@ -38,6 +38,23 @@ pub fn wild_cow_spawns() -> Vec<Vec2> {
     cows
 }
 
+/// Where the `n`th banked cow comes back as a wild one: uniform over the
+/// range's area (the range refills evenly, not in its starting herds) and at
+/// least `REPLACE_CLEARANCE` from every rider, so nobody sees it pop in.
+pub fn replacement_spawn(n: u64, riders: &[Vec2]) -> Vec2 {
+    let inner = CORRAL_HALF * SQRT_2 + WILD_SPAWN_CLEARANCE;
+    let outer = RANGE_RADIUS - BOUNDARY_MARGIN - COW_RADIUS;
+    let at = |attempt: u64| {
+        let seed = (n + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (attempt + 1).wrapping_mul(0xD1B5_4A32_D192_ED03);
+        let r = lerp(inner * inner, outer * outer, hash01(seed ^ 0x05)).sqrt();
+        Vec2::from_angle(hash01(seed ^ 0x06) * TAU) * r
+    };
+    let clear = |p: &Vec2| riders.iter().all(|r| r.distance(*p) >= REPLACE_CLEARANCE);
+    // A handful of tries always finds room on a range this size; the fallback
+    // only matters if riders ever blanket it.
+    (0..REPLACE_TRIES).map(at).find(clear).unwrap_or_else(|| at(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,6 +68,17 @@ mod tests {
             let corral = CORRAL_HALF + COW_RADIUS;
             assert!(p.x.abs() > corral || p.y.abs() > corral, "{p} inside the corral");
         }
+    }
+
+    #[test]
+    fn replacements_land_on_the_range_away_from_riders() {
+        let riders = [Vec2::new(60.0, 0.0), Vec2::new(-30.0, 90.0)];
+        for n in 0..200 {
+            let p = replacement_spawn(n, &riders);
+            assert!(p.length() < RANGE_RADIUS - BOUNDARY_MARGIN, "{p} past the bank");
+            assert!(riders.iter().all(|r| r.distance(p) >= REPLACE_CLEARANCE), "{p} near a rider");
+        }
+        assert_eq!(replacement_spawn(7, &riders), replacement_spawn(7, &riders));
     }
 
     #[test]

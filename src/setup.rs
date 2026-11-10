@@ -277,13 +277,22 @@ pub fn setup(
     // rigs are rooted at the feet. The models themselves arrive later:
     // `anim::finish_models` hangs them off these roots once the .glbs parse.
 
+    let brand_mesh = meshes.add(Sphere::new(1.0));
     for pos in crate::range::wild_cow_spawns() {
-        commands.spawn((
-            Transform::from_translation(world(pos, 0.0)),
-            Visibility::default(),
-            Cow { penned: false, drive: Vec2::ZERO },
-            Velocity(Vec2::ZERO),
-        ));
+        commands
+            .spawn((
+                Transform::from_translation(world(pos, 0.0)),
+                Visibility::default(),
+                Cow::default(),
+                Velocity(Vec2::ZERO),
+            ))
+            .with_child((
+                Mesh3d(brand_mesh.clone()),
+                MeshMaterial3d::<StandardMaterial>::default(),
+                Transform::from_translation(BRAND_OFFSET).with_scale(BRAND_SIZE),
+                Visibility::Hidden,
+                HerdBrand,
+            ));
     }
 
     // The player is a horse; the rider is parented to its saddle joint once the

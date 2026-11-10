@@ -219,7 +219,7 @@ pub fn spawn_cabinet(
             c.spawn(piece(frame_bottom, CabElem::FrameBottom));
 
             c.spawn((
-                Text::new("Penned: 0 / 24"),
+                Text::new("Herd 0"),
                 TextFont::from_font_size(20.0),
                 TextColor(Color::WHITE),
                 abs(),

@@ -14,10 +14,13 @@ pub struct Player {
     pub index: usize,
 }
 
-/// A cow. `penned` once it has been driven into the corral, where it stays.
-#[derive(Component)]
+/// A cow. `penned` once it has been driven into the corral, where it stays
+/// until its rider cashes out.
+#[derive(Component, Default)]
 pub struct Cow {
     pub penned: bool,
+    /// Player index whose herd it's in; `None` while wild.
+    pub owner: Option<usize>,
     /// Herding pressure carried frame to frame; see `sim::Boid::drive`.
     pub drive: Vec2,
 }
@@ -53,6 +56,29 @@ pub struct PendingThrows(pub Vec<Throw>);
 
 #[derive(Component)]
 pub struct PenCounter;
+
+/// The rider-coloured dot on a cow's rump, shown while the cow is in a herd.
+#[derive(Component)]
+pub struct HerdBrand;
+
+/// One unlit brand material per player slot, made on first use.
+#[derive(Resource, Default)]
+pub struct BrandMaterials(pub Vec<Handle<StandardMaterial>>);
+
+/// Run bookkeeping for cash-outs.
+#[derive(Resource, Default)]
+pub struct Runs {
+    /// Per player slot: whether that rider was inside the corral last frame,
+    /// so riding in cashes out once rather than every frame spent inside.
+    pub in_corral: Vec<bool>,
+    /// Cows recycled so far; seeds each replacement's spawn point.
+    pub replaced: u64,
+    /// The local rider's last cash-out, best this session, and how long the
+    /// result banner has left.
+    pub last_banked: usize,
+    pub best: usize,
+    pub banner: f32,
+}
 
 #[derive(Resource)]
 pub struct GameLevel(pub Level);

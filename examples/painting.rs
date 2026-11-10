@@ -437,7 +437,7 @@ fn build_scene(
         commands.spawn((
             Transform::from_translation(ground(pos)).with_rotation(face(dir)),
             Visibility::default(),
-            Cow { penned: false, drive: Vec2::ZERO },
+            Cow::default(),
             Velocity(dir * speed),
         ));
     }

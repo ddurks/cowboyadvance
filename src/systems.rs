@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use crate::components::*;
 use crate::config::*;
 use crate::sim::{
-    boid_acceleration, clamp_range, confine_to_corral, herd_max_speed, herd_sizes,
+    boid_acceleration, claim_owners, clamp_range, confine_to_corral, herd_max_speed, herd_sizes,
     resolve_body_collisions, resolve_fences, shape_ride_input, Body, Boid,
 };
 
@@ -50,7 +50,7 @@ pub fn player_movement(
 pub fn cow_boids(
     time: Res<Time>,
     level: Res<GameLevel>,
-    players: Query<(&Transform, Option<&Downed>), (With<Player>, Without<Cow>)>,
+    players: Query<(&Player, &Transform, Option<&Downed>), Without<Cow>>,
     mut cows: Query<(&mut Transform, &mut Velocity, &mut Cow), Without<Player>>,
 ) {
     let dt = time.delta_secs();
@@ -59,8 +59,14 @@ pub fn cow_boids(
     // avoid; a riderless horse still spooks cows.
     let player_positions: Vec<Vec2> = players
         .iter()
-        .filter(|(_, downed)| !downed.is_some_and(|d| d.horse_gone))
-        .map(|(t, _)| Vec2::new(t.translation.x, t.translation.z))
+        .filter(|(_, _, downed)| !downed.is_some_and(|d| d.horse_gone))
+        .map(|(_, t, _)| Vec2::new(t.translation.x, t.translation.z))
+        .collect();
+    // Only a rider in the saddle gathers cattle.
+    let claimers: Vec<(usize, Vec2)> = players
+        .iter()
+        .filter(|(_, _, downed)| downed.is_none())
+        .map(|(p, t, _)| (p.index, Vec2::new(t.translation.x, t.translation.z)))
         .collect();
 
     // Pass 1: snapshot (ends the immutable borrow before we mutate). The penned
@@ -71,15 +77,18 @@ pub fn cow_boids(
             pos: Vec2::new(t.translation.x, t.translation.z),
             vel: v.0,
             penned: c.penned,
+            owner: c.owner,
             drive: c.drive,
         })
         .collect();
     let herd_size = herd_sizes(&snapshot);
+    let owners = claim_owners(&snapshot, &claimers);
 
     // Pass 2: steer each cow against the snapshot (same iteration order).
     for (i, (mut tf, mut vel, mut cow)) in cows.iter_mut().enumerate() {
         let (acc, drive) = boid_acceleration(i, &snapshot, &player_positions, &level.0, dt);
         cow.drive = drive;
+        cow.owner = owners[i];
         let mut v = vel.0 + acc * dt;
         v *= 1.0 - (COW_DRAG * dt).min(1.0);
         v = v.clamp_length_max(herd_max_speed(herd_size[i]));
@@ -209,15 +218,105 @@ pub fn follow_camera(
     tf.translation = Vec3::new(focus.0.x, 0.0, focus.0.y) + CAM_OFFSET;
 }
 
-pub fn update_hud(cows: Query<&Cow>, mut text_q: Query<&mut Text, With<PenCounter>>) {
-    let total = cows.iter().count();
-    let penned = cows.iter().filter(|c| c.penned).count();
-    for mut text in &mut text_q {
-        if total > 0 && penned == total {
-            **text = format!("Penned: {penned} / {total}  -  ALL PENNED!");
-        } else {
-            **text = format!("Penned: {penned} / {total}");
+/// Riding into the corral ends the run: the rider's penned cows are banked and
+/// come back as wild cattle elsewhere on the range, and whatever of the herd
+/// is still outside goes wild where it stands. Riding in with no herd at all
+/// is just riding, not a run.
+#[allow(clippy::type_complexity)]
+pub fn cash_out(
+    time: Res<Time>,
+    local: Res<LocalPlayer>,
+    level: Res<GameLevel>,
+    mut runs: ResMut<Runs>,
+    players: Query<(&Player, &Transform), (Without<Downed>, Without<Cow>)>,
+    mut cows: Query<(&mut Transform, &mut Velocity, &mut Cow), Without<Player>>,
+) {
+    runs.banner = (runs.banner - time.delta_secs()).max(0.0);
+    let riders: Vec<Vec2> =
+        players.iter().map(|(_, t)| Vec2::new(t.translation.x, t.translation.z)).collect();
+
+    for (player, tf) in &players {
+        let inside = level.0.penned(Vec2::new(tf.translation.x, tf.translation.z));
+        if runs.in_corral.len() <= player.index {
+            runs.in_corral.resize(player.index + 1, false);
         }
+        let entered = inside && !runs.in_corral[player.index];
+        runs.in_corral[player.index] = inside;
+        let mine = Some(player.index);
+        if !entered || !cows.iter().any(|(_, _, c)| c.owner == mine) {
+            continue;
+        }
+
+        let mut banked = 0;
+        for (mut tf, mut vel, mut cow) in &mut cows {
+            // Wild strays that wandered into the corral clear out with the
+            // rider's herd rather than milling there forever.
+            if cow.penned && (cow.owner == mine || cow.owner.is_none()) {
+                banked += usize::from(cow.owner == mine);
+                let spot = crate::range::replacement_spawn(runs.replaced, &riders);
+                runs.replaced += 1;
+                tf.translation.x = spot.x;
+                tf.translation.z = spot.y;
+                vel.0 = Vec2::ZERO;
+                *cow = Cow::default();
+            } else if cow.owner == mine {
+                cow.owner = None;
+            }
+        }
+
+        if player.index == local.0 {
+            runs.last_banked = banked;
+            runs.best = runs.best.max(banked);
+            runs.banner = CASH_OUT_BANNER_SECS;
+        }
+    }
+}
+
+/// Show each herded cow's brand in its rider's colour; hide it on wild cows.
+pub fn show_herd_brands(
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut palette: ResMut<BrandMaterials>,
+    cows: Query<(&Cow, &Children)>,
+    mut brands: Query<(&mut Visibility, &mut MeshMaterial3d<StandardMaterial>), With<HerdBrand>>,
+) {
+    for (cow, children) in &cows {
+        for &child in children {
+            let Ok((mut vis, mut mat)) = brands.get_mut(child) else {
+                continue;
+            };
+            let Some(owner) = cow.owner else {
+                vis.set_if_neq(Visibility::Hidden);
+                continue;
+            };
+            while palette.0.len() <= owner {
+                let color = srgb3(player_color(palette.0.len()));
+                // Unlit so the colour reads the same in the cow's shadow.
+                palette.0.push(materials.add(StandardMaterial { base_color: color, unlit: true, ..default() }));
+            }
+            vis.set_if_neq(Visibility::Inherited);
+            if mat.0 != palette.0[owner] {
+                mat.0 = palette.0[owner].clone();
+            }
+        }
+    }
+}
+
+pub fn update_hud(
+    local: Res<LocalPlayer>,
+    runs: Res<Runs>,
+    cows: Query<&Cow>,
+    mut text_q: Query<&mut Text, With<PenCounter>>,
+) {
+    let mine = cows.iter().filter(|c| c.owner == Some(local.0));
+    let (penned, herd) = mine.fold((0, 0), |(p, h), c| if c.penned { (p + 1, h) } else { (p, h + 1) });
+    for mut text in &mut text_q {
+        **text = if runs.banner > 0.0 {
+            format!("Banked {}!  Best {}", runs.last_banked, runs.best)
+        } else if penned > 0 {
+            format!("Herd {herd}  Penned {penned}")
+        } else {
+            format!("Herd {herd}")
+        };
     }
 }
 
